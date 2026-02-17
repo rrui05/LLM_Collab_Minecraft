@@ -16,9 +16,12 @@ except Exception as e:  # pragma: no cover
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(REPO_ROOT))
+COMLRL_ROOT = os.path.join(os.path.dirname(REPO_ROOT), "CoMLRL")
+if COMLRL_ROOT not in sys.path:
+    sys.path.insert(0, COMLRL_ROOT)
 
 from datasets import Dataset  # type: ignore
-from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+from transformers import AutoTokenizer  # type: ignore
 import torch  # type: ignore
 
 from comlrl.trainers.reinforce import MAGRPOTrainer  # type: ignore
@@ -32,7 +35,10 @@ from LLM_Collab_Minecraft.str_build.rewards.str_builder_reward import get_reward
 from LLM_Collab_Minecraft.str_build.utils.config import apply_overrides, load_yaml, resolve_path
 from LLM_Collab_Minecraft.str_build.utils.prompting import apply_graph_setting, apply_prompt_defaults
 from LLM_Collab_Minecraft.str_build.utils.str_builder import load_tasks_from_csv
-from LLM_Collab_Minecraft.str_build.utils.trainer_args import get_trainer_args
+from LLM_Collab_Minecraft.str_build.utils.trainer_args import (
+    get_trainer_args,
+    get_agent_sampling_config,
+)
 
 
 def _slice_items(items: List[Dict[str, Any]], split_expr: Any) -> List[Dict[str, Any]]:
@@ -287,11 +293,7 @@ def main() -> int:
         ):
             raise ValueError("agents must be a list of model names.")
         agent_names = [str(x) for x in agent_names]
-    model_kwargs: Dict[str, Any] = {}
-
     dtype = _map_dtype(model_cfg.get("dtype") or model_cfg.get("torch_dtype"))
-    if dtype is not None:
-        model_kwargs["torch_dtype"] = dtype
 
     tokenizer_source = agent_names[0] if agent_names else model_name
     if not tokenizer_source:
@@ -305,17 +307,8 @@ def main() -> int:
             tok.pad_token = tok.eos_token
     tokenizer = tokenizers[0]
 
-    agents = []
-    if agent_names:
-        for name in agent_names:
-            agent = AutoModelForCausalLM.from_pretrained(name, **model_kwargs)
-            agents.append(agent)
-    else:
-        for _ in range(num_agents):
-            agent = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
-            agents.append(agent)
-
-    magrpo_args = get_trainer_args(cfg)
+    sampling_cfg = get_agent_sampling_config(cfg)
+    magrpo_args = get_trainer_args(cfg, sampling_cfg=sampling_cfg)
     formatters = _build_formatters(cfg, num_agents=num_agents, tokenizer=tokenizer)
     reward_func = get_reward_function(cfg=cfg, num_agents=num_agents)
 
@@ -394,8 +387,12 @@ def main() -> int:
 
     trainer_kwargs: Dict[str, Any] = {
         "agent_model": model_name or None,
-        "agents": agents,
+        "agents": agent_names,
         "num_agents": num_agents,
+        "model_config": {
+            "torch_dtype": dtype,
+            "special_tokens": model_cfg.get("special_tokens", {}),
+        },
         "reward_func": reward_func,
         "formatters": formatters,
         "args": magrpo_args,

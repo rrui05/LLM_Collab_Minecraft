@@ -86,12 +86,67 @@ def _as_bool(x: Any, default: bool) -> bool:
     return bool(x)
 
 
-def get_trainer_args(cfg: Dict[str, Any]) -> MAGRPOConfig:
+def _as_device_spec(x: Any) -> Any:
+    if x is None:
+        return None
+    if isinstance(x, str):
+        s = x.strip()
+        if s.lower() in ("none", "null", ""):
+            return None
+        return s
+    if isinstance(x, (list, tuple)):
+        return [str(v) for v in x]
+    return str(x)
+
+
+def get_agent_sampling_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    model_cfg = cfg.get("agent_model")
+    if not isinstance(model_cfg, dict):
+        raise ValueError("agent_model must be a mapping.")
+    missing = [key for key in ("temperature", "top_p", "top_k") if key not in model_cfg]
+    if missing:
+        raise ValueError(
+            f"agent_model is missing required sampling fields: {', '.join(missing)}"
+        )
+
+    def _require_float(key: str) -> float:
+        value = model_cfg.get(key)
+        if value is None or isinstance(value, bool):
+            raise ValueError(f"agent_model.{key} must be provided as a float.")
+        try:
+            return float(value)
+        except Exception as exc:
+            raise ValueError(f"agent_model.{key} must be a float, got {value!r}.") from exc
+
+    top_k_raw = model_cfg.get("top_k")
+    if isinstance(top_k_raw, str) and top_k_raw.strip().lower() in ("none", "null", ""):
+        top_k_val: Optional[int] = None
+    elif top_k_raw is None:
+        top_k_val = None
+    else:
+        try:
+            top_k_val = int(float(top_k_raw))
+        except Exception as exc:
+            raise ValueError(
+                f"agent_model.top_k must be an integer or null, got {top_k_raw!r}."
+            ) from exc
+
+    return {
+        "temperature": _require_float("temperature"),
+        "top_p": _require_float("top_p"),
+        "top_k": top_k_val,
+    }
+
+
+def get_trainer_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> MAGRPOConfig:
     tr = cfg.get("magrpo") or {}
     if not isinstance(tr, dict):
         tr = {}
+    ext = cfg.get("external") or {}
+    if not isinstance(ext, dict):
+        ext = {}
 
-    lr_val = tr.get("agent_learning_rate", 3e-5)
+    lr_val = tr.get("agent_learning_rate", 1e-5)
 
     joint_mode = tr.get("joint_mode", tr.get("joint_action_mode", None))
     joint_mode_str = str(joint_mode or "aligned").strip().lower()
@@ -101,37 +156,40 @@ def get_trainer_args(cfg: Dict[str, Any]) -> MAGRPOConfig:
         joint_mode_str = "cross"
 
     candidate = {
-        "num_turns": _as_int(tr.get("num_turns", 1), 1),
-        "num_train_epochs": _as_int(tr.get("num_train_epochs", 3), 3),
-        "agent_learning_rate": _as_float(lr_val, 3e-5),
-        "logging_steps": _as_int(tr.get("logging_steps", 50), 50),
-        "num_generations": _as_int(tr.get("num_generations", 4), 4),
+        "num_turns": _as_int(tr.get("num_turns", 4), 4),
+        "num_train_epochs": _as_int(tr.get("num_train_epochs", 20), 20),
+        "agent_learning_rate": _as_float(lr_val, 1e-5),
+        "logging_steps": _as_int(tr.get("logging_steps", 5), 5),
+        "num_generations": _as_int(tr.get("num_generations", 2), 2),
         "max_new_tokens": _as_int(tr.get("max_new_tokens", 512), 512),
-        "temperature": _as_float(tr.get("temperature", 0.2), 0.2),
-        "top_p": _as_float(tr.get("top_p", 0.95), 0.95),
+        "temperature": _as_float(sampling_cfg.get("temperature"), 0.6),
+        "top_p": _as_float(sampling_cfg.get("top_p"), 0.6),
+        "top_k": _as_opt_int(sampling_cfg.get("top_k"), None),
     }
-    if "top_k" in tr:
-        candidate["top_k"] = _as_opt_int(tr.get("top_k", None), None)
     candidate.update(
         {
+            "parallel_training": str(tr.get("parallel_training", "none")).strip().lower(),
+            "agent_devices": _as_device_spec(tr.get("agent_devices", ["cuda:0"])),
             "discount": _as_float(tr.get("discount", tr.get("gamma", 0.9)), 0.9),
             "joint_mode": joint_mode_str,
+            "early_termination_threshold": _as_opt_float(
+                tr.get("early_termination_threshold", -0.1), -0.1
+            ),
         }
     )
-    if "early_termination_threshold" in tr:
-        candidate["early_termination_threshold"] = _as_opt_float(
-            tr.get("early_termination_threshold", None), None
-        )
     candidate.update(
         {
-            "rollout_buffer_size": _as_int(tr.get("rollout_buffer_size", 2), 2),
-            "train_batch_size": _as_opt_int(tr.get("train_batch_size", None), None),
+            "rollout_buffer_size": _as_int(tr.get("rollout_buffer_size", 1), 1),
+            "train_batch_size": _as_opt_int(tr.get("train_batch_size", 1), 1),
             "advantage_normalization": _as_bool(
                 tr.get("advantage_normalization", True), True
             ),
-            "eval_interval": _as_int(tr.get("eval_interval", 16), 16),
-            "eval_num_samples": _as_int(tr.get("eval_num_samples", 4), 4),
+            "eval_interval": _as_int(tr.get("eval_interval", 2), 2),
+            "eval_num_samples": _as_int(tr.get("eval_num_samples", 2), 2),
             "eval_batch_size": _as_int(tr.get("eval_batch_size", 1), 1),
+            "external_prompt_passthrough": _as_bool(
+                ext.get("external_prompt_passthrough", False), False
+            ),
         }
     )
 
@@ -149,38 +207,47 @@ def get_trainer_args(cfg: Dict[str, Any]) -> MAGRPOConfig:
     return cfg_obj
 
 
-def get_maac_args(cfg: Dict[str, Any], *, model_name: Optional[str] = None) -> MAACConfig:
+def get_maac_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> MAACConfig:
     tr = cfg.get("maac") or {}
     if not isinstance(tr, dict):
         tr = {}
+    ext = cfg.get("external") or {}
+    if not isinstance(ext, dict):
+        ext = {}
 
     adv_norm = tr.get("advantage_normalization", tr.get("normalize_advantage", True))
 
     candidate = {
-        "num_turns": _as_int(tr.get("num_turns", 1), 1),
-        "num_train_epochs": _as_int(tr.get("num_train_epochs", 40), 40),
+        "num_turns": _as_int(tr.get("num_turns", 4), 4),
+        "num_train_epochs": _as_int(tr.get("num_train_epochs", 150), 150),
         "agent_learning_rate": _as_float(tr.get("agent_learning_rate", 5e-6), 5e-6),
         "critic_learning_rate": _as_float(
             tr.get("critic_learning_rate", 5e-6), 5e-6
         ),
-        "rollout_buffer_size": _as_int(tr.get("rollout_buffer_size", 8), 8),
+        "rollout_buffer_size": _as_int(tr.get("rollout_buffer_size", 1), 1),
         "value_loss_coef": _as_float(tr.get("value_loss_coef", 0.6), 0.6),
         "advantage_normalization": _as_bool(adv_norm, True),
-        "max_new_tokens": _as_int(tr.get("max_new_tokens", 256), 256),
-        "temperature": _as_float(tr.get("temperature", 0.6), 0.6),
-        "top_p": _as_float(tr.get("top_p", 0.6), 0.6),
-        "top_k": _as_opt_int(tr.get("top_k", None), None),
+        "max_new_tokens": _as_int(tr.get("max_new_tokens", 512), 512),
+        "temperature": _as_float(sampling_cfg.get("temperature"), 0.6),
+        "top_p": _as_float(sampling_cfg.get("top_p"), 0.6),
+        "top_k": _as_opt_int(sampling_cfg.get("top_k"), None),
         "num_agents": _as_int(tr.get("num_agents", 2), 2),
         "num_generations": _as_int(tr.get("num_generations", 1), 1),
+        "parallel_training": str(tr.get("parallel_training", "none")).strip().lower(),
+        "agent_devices": _as_device_spec(tr.get("agent_devices", ["cuda:0"])),
+        "critic_devices": _as_device_spec(tr.get("critic_devices", ["cuda:0"])),
         "discount": _as_float(tr.get("discount", 0.9), 0.9),
+        "external_prompt_passthrough": _as_bool(
+            ext.get("external_prompt_passthrough", False), False
+        ),
         "critic_type": str(tr.get("critic_type", "v")),
         "early_termination_threshold": _as_opt_float(
-            tr.get("early_termination_threshold", None), None
+            tr.get("early_termination_threshold", 0.0), 0.0
         ),
-        "eval_interval": _as_int(tr.get("eval_interval", 16), 16),
-        "eval_num_samples": _as_int(tr.get("eval_num_samples", 4), 4),
+        "eval_interval": _as_int(tr.get("eval_interval", 10), 10),
+        "eval_num_samples": _as_int(tr.get("eval_num_samples", 2), 2),
         "eval_batch_size": _as_int(tr.get("eval_batch_size", 1), 1),
-        "logging_steps": _as_int(tr.get("logging_steps", 1), 1),
+        "logging_steps": _as_int(tr.get("logging_steps", 40), 40),
     }
 
     try:
@@ -195,44 +262,53 @@ def get_maac_args(cfg: Dict[str, Any], *, model_name: Optional[str] = None) -> M
     return MAACConfig(**filtered)
 
 
-def get_iac_args(cfg: Dict[str, Any], *, model_name: Optional[str] = None) -> IACConfig:
+def get_iac_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> IACConfig:
     tr = cfg.get("iac") or {}
     if not isinstance(tr, dict):
         tr = {}
+    ext = cfg.get("external") or {}
+    if not isinstance(ext, dict):
+        ext = {}
 
     use_separate_critic = _as_bool(tr.get("use_separate_critic", True), True)
     adv_norm = tr.get("advantage_normalization", tr.get("normalize_advantage", True))
 
     candidate = {
-        "num_turns": _as_int(tr.get("num_turns", 1), 1),
-        "num_train_epochs": _as_int(tr.get("num_train_epochs", 40), 40),
+        "num_turns": _as_int(tr.get("num_turns", 4), 4),
+        "num_train_epochs": _as_int(tr.get("num_train_epochs", 150), 150),
         "agent_learning_rate": _as_float(tr.get("agent_learning_rate", 5e-6), 5e-6),
         "critic_learning_rate": _as_opt_float(
             tr.get("critic_learning_rate", 5e-6), 5e-6
         ),
-        "rollout_buffer_size": _as_int(tr.get("rollout_buffer_size", 8), 8),
+        "rollout_buffer_size": _as_int(tr.get("rollout_buffer_size", 1), 1),
         "value_loss_coef": _as_float(tr.get("value_loss_coef", 0.6), 0.6),
         "value_clip_range": _as_opt_float(tr.get("value_clip_range", 0.05), 0.05),
         "advantage_normalization": _as_bool(adv_norm, True),
-        "max_new_tokens": _as_int(tr.get("max_new_tokens", 256), 256),
-        "temperature": _as_float(tr.get("temperature", 0.6), 0.6),
-        "top_p": _as_float(tr.get("top_p", 0.6), 0.6),
-        "top_k": _as_opt_int(tr.get("top_k", None), None),
+        "max_new_tokens": _as_int(tr.get("max_new_tokens", 512), 512),
+        "temperature": _as_float(sampling_cfg.get("temperature"), 0.6),
+        "top_p": _as_float(sampling_cfg.get("top_p"), 0.6),
+        "top_k": _as_opt_int(sampling_cfg.get("top_k"), None),
         "num_agents": _as_int(tr.get("num_agents", 2), 2),
         "num_generations": _as_int(tr.get("num_generations", 1), 1),
         "use_separate_critic": use_separate_critic,
+        "parallel_training": str(tr.get("parallel_training", "none")).strip().lower(),
+        "agent_devices": _as_device_spec(tr.get("agent_devices", ["cuda:0"])),
+        "critic_devices": _as_device_spec(tr.get("critic_devices", ["cuda:0"])),
         "critic_value_head_hidden_dim": _as_opt_int(
             tr.get("critic_value_head_hidden_dim", None), None
         ),
         "value_head_hidden_dim": _as_opt_int(tr.get("value_head_hidden_dim", None), None),
         "discount": _as_float(tr.get("discount", 0.9), 0.9),
-        "early_termination_threshold": _as_opt_float(
-            tr.get("early_termination_threshold", None), None
+        "external_prompt_passthrough": _as_bool(
+            ext.get("external_prompt_passthrough", False), False
         ),
-        "eval_interval": _as_int(tr.get("eval_interval", 16), 16),
-        "eval_num_samples": _as_int(tr.get("eval_num_samples", 4), 4),
+        "early_termination_threshold": _as_opt_float(
+            tr.get("early_termination_threshold", 0.0), 0.0
+        ),
+        "eval_interval": _as_int(tr.get("eval_interval", 10), 10),
+        "eval_num_samples": _as_int(tr.get("eval_num_samples", 2), 2),
         "eval_batch_size": _as_int(tr.get("eval_batch_size", 1), 1),
-        "logging_steps": _as_int(tr.get("logging_steps", 1), 1),
+        "logging_steps": _as_int(tr.get("logging_steps", 40), 40),
     }
 
     try:
