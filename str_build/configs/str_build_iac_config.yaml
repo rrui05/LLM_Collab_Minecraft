@@ -17,6 +17,8 @@ critic_model:
 
 critics: null
 
+seed: 42
+
 dataset:
   name: str_build
   type: str_build

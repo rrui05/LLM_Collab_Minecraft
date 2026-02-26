@@ -17,6 +17,8 @@ critic_model:
 
 critics: null
 
+seed: 42
+
 dataset:
   name: house_build
   type: house_build
