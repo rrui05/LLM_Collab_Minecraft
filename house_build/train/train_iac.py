@@ -113,6 +113,12 @@ def _as_int(value: Any, default: int) -> int:
         return int(default)
 
 
+def _set_seed(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
 def _prepare_rpg_state(cfg: Dict[str, Any], seed: int) -> Dict[str, Any]:
     task_cfg = cfg.get("task") or {}
     if not isinstance(task_cfg, dict):
@@ -367,22 +373,12 @@ def main() -> int:
         cfg = apply_overrides(cfg, override_items)
     apply_prompt_defaults(cfg)
 
-    seed_val = cfg.get("seed", None)
-    if seed_val is None:
-        try:
-            import secrets
-
-            seed = int(secrets.randbits(32))
-        except Exception:
-            seed = int(time.time()) & 0x7FFFFFFF
-    else:
-        seed = int(seed_val)
-
-    _prepare_rpg_state(cfg, seed)
-
     iac_cfg = cfg.get("iac") or {}
     if not isinstance(iac_cfg, dict):
         iac_cfg = {}
+    seed_value = int(cfg.get("seed", iac_cfg.get("seed", 42)))
+    _set_seed(seed_value)
+    _prepare_rpg_state(cfg, seed_value)
     num_agents = int(iac_cfg.get("num_agents") or 1)
     if num_agents not in (1, 2):
         raise ValueError("iac.num_agents must be 1 or 2")

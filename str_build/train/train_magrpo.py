@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import sys
-import time
 from typing import Any, Dict, List
 
 try:
@@ -95,6 +95,12 @@ def _map_dtype(dtype_cfg: Any) -> Any:
     if s == "auto":
         return "auto"
     return None
+
+
+def _set_seed(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def _render_prompt(
@@ -232,20 +238,11 @@ def main() -> int:
         cfg = apply_overrides(cfg, override_items)
     apply_prompt_defaults(cfg)
 
-    seed_val = cfg.get("seed", None)
-    if seed_val is None:
-        try:
-            import secrets
-
-            seed = int(secrets.randbits(32))
-        except Exception:
-            seed = int(time.time()) & 0x7FFFFFFF
-    else:
-        seed = int(seed_val)
-
     magrpo_cfg = cfg.get("magrpo") or {}
     if not isinstance(magrpo_cfg, dict):
         magrpo_cfg = {}
+    seed_value = int(cfg.get("seed", magrpo_cfg.get("seed", 42)))
+    _set_seed(seed_value)
     num_agents = int(magrpo_cfg.get("num_agents") or 1)
     if num_agents not in (1, 2):
         raise ValueError("magrpo.num_agents must be 1 or 2")
