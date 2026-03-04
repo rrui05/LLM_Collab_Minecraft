@@ -31,3 +31,6 @@ str_build/scripts/**/*.out
 house_build/scripts/**/*.sh
 !house_build/scripts/**/*.example.sh
 house_build/scripts/**/*.out
+
+# Root-level output directories
+/output*/
