@@ -52,6 +52,13 @@ task:
   - stone_bricks
   - planks
   - air
+  block_agent3:
+  - white_concrete
+  - obsidian
+  - stone_stairs
+  - stone_bricks
+  - planks
+  - air
 
 output:
   base_dir: output_iac_house_build

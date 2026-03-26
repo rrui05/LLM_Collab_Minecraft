@@ -42,8 +42,17 @@ from LLM_Collab_Minecraft.house_build.utils.house_builder import (
     normalize_block_id,
     unique_block_list,
 )
+from LLM_Collab_Minecraft.house_build.utils.agent_utils import (
+    extend_fmt_kwargs_with_agents,
+    get_agent_template,
+    parse_agent_overrides,
+    set_agent_values,
+)
 from LLM_Collab_Minecraft.house_build.utils.config import apply_overrides, load_yaml, resolve_path
-from LLM_Collab_Minecraft.house_build.utils.prompting import apply_prompt_defaults
+from LLM_Collab_Minecraft.house_build.utils.prompting import (
+    DEFAULT_USER_TEMPLATE_MULTI_AGENT,
+    apply_prompt_defaults,
+)
 from LLM_Collab_Minecraft.house_build.utils.trainer_args import (
     get_trainer_args,
     get_agent_sampling_config,
@@ -227,8 +236,9 @@ def _build_formatters(cfg: Dict[str, Any], *, num_agents: int, tokenizer: Any | 
     include_air_rects = bool(prompt_cfg.get("include_air_rects", False))
     system_prompt = str(prompt_cfg.get("system") or "").rstrip()
     user_template = str(prompt_cfg.get("user_template") or "").rstrip()
-    user_template_agent1 = str(prompt_cfg.get("user_template_agent1") or user_template).rstrip()
-    user_template_agent2 = str(prompt_cfg.get("user_template_agent2") or user_template).rstrip()
+    multi_agent_template = str(
+        prompt_cfg.get("user_template_multi_agent") or DEFAULT_USER_TEMPLATE_MULTI_AGENT
+    ).rstrip()
 
     task_cfg = cfg.get("task") or {}
     if not isinstance(task_cfg, dict):
@@ -249,8 +259,11 @@ def _build_formatters(cfg: Dict[str, Any], *, num_agents: int, tokenizer: Any | 
         s = str(v).strip()
         return [s] if s else []
 
-    block_agent1_override = _as_block_list(task_cfg.get("block_agent1"))
-    block_agent2_override = _as_block_list(task_cfg.get("block_agent2"))
+    block_agent_overrides = parse_agent_overrides(
+        task_cfg,
+        num_agents=num_agents,
+        parse_list=_as_block_list,
+    )
 
     def _prompt_override(item: Dict[str, Any]) -> str | None:
         p = item.get("prompt")
@@ -285,7 +298,7 @@ def _build_formatters(cfg: Dict[str, Any], *, num_agents: int, tokenizer: Any | 
             return ""
         return "Resource limits per agent (air unlimited):\n" + "\n".join(lines)
 
-    def _render(item: Dict[str, Any], tmpl: str) -> str:
+    def _render(item: Dict[str, Any], tmpl: str, *, agent_idx: int) -> str:
         override = _prompt_override(item)
         if override is not None:
             return override
@@ -306,23 +319,28 @@ def _build_formatters(cfg: Dict[str, Any], *, num_agents: int, tokenizer: Any | 
         layers_text = format_layers_text(task, world_from=w_from, include_air=include_air_rects)
         legend = legend_lines(task.inventory)
 
-        allowed_blocks_agent1 = _allowed_blocks(item, block_agent1_override)
-        allowed_blocks_agent2 = _allowed_blocks(item, block_agent2_override)
-        block_agent1_lines = "\n".join(f"- {b}" for b in allowed_blocks_agent1)
-        block_agent2_lines = "\n".join(f"- {b}" for b in allowed_blocks_agent2)
+        allowed_blocks_by_agent = [
+            _allowed_blocks(item, overrides) for overrides in block_agent_overrides
+        ]
+
+        fmt_kwargs = extend_fmt_kwargs_with_agents(
+            {
+                "task_id": str(item.get("task_id") or ""),
+                "world_bbox_from": json.dumps(w_from, separators=(",", ":")),
+                "world_bbox_to": json.dumps(w_to, separators=(",", ":")),
+                "legend_lines": legend,
+                "layers_text": layers_text,
+                "spider_num": rpg_kwargs.get("spider_num"),
+                "player_hp": rpg_kwargs.get("player_hp"),
+                "spider_atk": rpg_kwargs.get("spider_atk"),
+                "spider_dmg": rpg_kwargs.get("spider_dmg"),
+            },
+            allowed_blocks_by_agent,
+            current_agent_idx=agent_idx,
+        )
 
         user = tmpl.format(
-            task_id=str(item.get("task_id") or ""),
-            world_bbox_from=json.dumps(w_from, separators=(",", ":")),
-            world_bbox_to=json.dumps(w_to, separators=(",", ":")),
-            legend_lines=legend,
-            layers_text=layers_text,
-            block_agent1_lines=block_agent1_lines,
-            block_agent2_lines=block_agent2_lines,
-            spider_num=rpg_kwargs.get("spider_num"),
-            player_hp=rpg_kwargs.get("player_hp"),
-            spider_atk=rpg_kwargs.get("spider_atk"),
-            spider_dmg=rpg_kwargs.get("spider_dmg"),
+            **fmt_kwargs
         ).rstrip()
         resource_limits_text = _format_resource_limits(task)
         if resource_limits_text:
@@ -335,12 +353,22 @@ def _build_formatters(cfg: Dict[str, Any], *, num_agents: int, tokenizer: Any | 
         )
 
     if num_agents == 1:
-        return [lambda item: _render(item, user_template)]
+        return [lambda item: _render(item, user_template, agent_idx=0)]
 
-    return [
-        lambda item: _render(item, user_template_agent1),
-        lambda item: _render(item, user_template_agent2),
-    ]
+    formatters: List[Any] = []
+    for agent_idx in range(num_agents):
+        tmpl = get_agent_template(
+            prompt_cfg,
+            agent_idx,
+            default_template=user_template,
+            default_multi_agent_template=multi_agent_template,
+        )
+        formatters.append(
+            lambda item, tmpl=tmpl, agent_idx=agent_idx: _render(
+                item, tmpl, agent_idx=agent_idx
+            )
+        )
+    return formatters
 
 
 def main() -> int:
@@ -380,8 +408,8 @@ def main() -> int:
     _set_seed(seed_value)
     _prepare_rpg_state(cfg, seed_value)
     num_agents = int(magrpo_cfg.get("num_agents") or 1)
-    if num_agents not in (1, 2):
-        raise ValueError("magrpo.num_agents must be 1 or 2")
+    if num_agents < 1:
+        raise ValueError("magrpo.num_agents must be >= 1")
 
     dataset_cfg = cfg.get("dataset") or {}
     if not isinstance(dataset_cfg, dict):
@@ -422,6 +450,8 @@ def main() -> int:
         ):
             raise ValueError("agents must be a list of model names.")
         agent_names = [str(x) for x in agent_names]
+        if len(agent_names) != num_agents:
+            raise ValueError("agents length must match magrpo.num_agents")
     dtype = _map_dtype(model_cfg.get("dtype") or model_cfg.get("torch_dtype"))
 
     tokenizer_source = agent_names[0] if agent_names else model_name
@@ -543,8 +573,9 @@ def main() -> int:
             prompt_cfg = {}
         system_prompt = str(prompt_cfg.get("system") or "").rstrip()
         user_template = str(prompt_cfg.get("user_template") or "").rstrip()
-        user_template_agent1 = str(prompt_cfg.get("user_template_agent1") or user_template).rstrip()
-        user_template_agent2 = str(prompt_cfg.get("user_template_agent2") or user_template).rstrip()
+        multi_agent_template = str(
+            prompt_cfg.get("user_template_multi_agent") or DEFAULT_USER_TEMPLATE_MULTI_AGENT
+        ).rstrip()
         include_air_rects = bool(prompt_cfg.get("include_air_rects", False))
 
         task_cfg = cfg.get("task") or {}
@@ -567,8 +598,11 @@ def main() -> int:
             s = str(v).strip()
             return [s] if s else []
 
-        block_agent1_override = _as_block_list(task_cfg.get("block_agent1"))
-        block_agent2_override = _as_block_list(task_cfg.get("block_agent2"))
+        block_agent_overrides = parse_agent_overrides(
+            task_cfg,
+            num_agents=num_agents,
+            parse_list=_as_block_list,
+        )
 
         def _allowed_blocks(item: Dict[str, Any], overrides: List[str]) -> List[str]:
             if overrides:
@@ -621,49 +655,73 @@ def main() -> int:
                 if resource_limits_lines:
                     resource_limits_text = "Resource limits per agent (air unlimited):\n" + "\n".join(resource_limits_lines)
 
-                allowed_blocks_agent1 = _allowed_blocks(item, block_agent1_override)
-                allowed_blocks_agent2 = _allowed_blocks(item, block_agent2_override)
-                block_agent1_lines = "\n".join(f"- {b}" for b in allowed_blocks_agent1)
-                block_agent2_lines = "\n".join(f"- {b}" for b in allowed_blocks_agent2)
+                allowed_blocks_by_agent = [
+                    _allowed_blocks(item, overrides) for overrides in block_agent_overrides
+                ]
 
-                fmt_kwargs = {
+                base_fmt_kwargs = {
                     "task_id": str(item.get("task_id") or ""),
                     "world_bbox_from": json.dumps(w_from, separators=(",", ":")),
                     "world_bbox_to": json.dumps(w_to, separators=(",", ":")),
                     "legend_lines": legend,
                     "layers_text": layers_text,
-                    "block_agent1_lines": block_agent1_lines,
-                    "block_agent2_lines": block_agent2_lines,
                     "spider_num": rpg_kwargs.get("spider_num"),
                     "player_hp": rpg_kwargs.get("player_hp"),
                     "spider_atk": rpg_kwargs.get("spider_atk"),
                     "spider_dmg": rpg_kwargs.get("spider_dmg"),
                 }
-                base_user_single = user_template.format(**fmt_kwargs).rstrip()
-                base_user_agent1 = user_template_agent1.format(**fmt_kwargs).rstrip()
-                base_user_agent2 = user_template_agent2.format(**fmt_kwargs).rstrip()
+                base_user_single = user_template.format(
+                    **extend_fmt_kwargs_with_agents(
+                        dict(base_fmt_kwargs),
+                        allowed_blocks_by_agent,
+                        current_agent_idx=0,
+                    )
+                ).rstrip()
+                user_templates_by_agent = [
+                    get_agent_template(
+                        prompt_cfg,
+                        agent_idx,
+                        default_template=user_template,
+                        default_multi_agent_template=multi_agent_template,
+                    )
+                    for agent_idx in range(num_agents)
+                ]
+                base_users_by_agent = [
+                    tmpl.format(
+                        **extend_fmt_kwargs_with_agents(
+                            dict(base_fmt_kwargs),
+                            allowed_blocks_by_agent,
+                            current_agent_idx=agent_idx,
+                        )
+                    ).rstrip()
+                    for agent_idx, tmpl in enumerate(user_templates_by_agent)
+                ]
                 if resource_limits_text:
                     base_user_single = base_user_single + "\n\n" + resource_limits_text
-                    base_user_agent1 = base_user_agent1 + "\n\n" + resource_limits_text
-                    base_user_agent2 = base_user_agent2 + "\n\n" + resource_limits_text
+                    base_users_by_agent = [
+                        user_prompt + "\n\n" + resource_limits_text
+                        for user_prompt in base_users_by_agent
+                    ]
 
                 payload = {
                     "system_prompt": system_prompt,
                     "user_prompt_single": base_user_single,
-                    "user_prompt_agent1": base_user_agent1,
-                    "user_prompt_agent2": base_user_agent2,
                     "task_id": str(item.get("task_id") or ""),
                     "local_bbox_from": [int(v) for v in (w_from or [0, 0, 0])],
                     "local_bbox_to": [int(v) for v in (w_to or [0, 0, 0])],
                     "inventory": {str(k): str(v) for k, v in (inventory or {}).items()},
                     "layers_by_y": {str(k): [str(r) for r in v] for k, v in (layers_by_y or {}).items()},
-                    "allowed_blocks_agent1": list(allowed_blocks_agent1),
-                    "allowed_blocks_agent2": list(allowed_blocks_agent2),
                     "max_commands_total": max_commands_total,
                     "limited_resource": limited_resource,
                     "resource_limits_text": resource_limits_text,
                     "rpg_state": cfg.get("_rpg_state"),
                 }
+                set_agent_values(payload, "user_prompt", base_users_by_agent)
+                set_agent_values(
+                    payload,
+                    "allowed_blocks",
+                    [list(blocks) for blocks in allowed_blocks_by_agent],
+                )
 
                 ds_key = _normalize_key(str(item.get("prompt") or ""))
                 if ds_key:

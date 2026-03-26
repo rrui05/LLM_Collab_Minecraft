@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from LLM_Collab_Minecraft.house_build.utils.agent_utils import (
+    get_agent_prompt,
+    get_allowed_blocks,
+    split_limits,
+)
 from LLM_Collab_Minecraft.house_build.utils.house_builder import (
     TaskSpec,
     build_expected_map,
@@ -43,24 +48,12 @@ def _task_from_ctx(ctx: Dict[str, Any]) -> TaskSpec:
 
 
 def _allowed_blocks(ctx: Dict[str, Any], agent_idx: int, inventory: Dict[str, str]) -> List[str]:
-    key = "allowed_blocks_agent1" if agent_idx == 0 else "allowed_blocks_agent2"
-    raw = ctx.get(key) or []
-    if isinstance(raw, (list, tuple)):
-        blocks = unique_block_list([str(v) for v in raw])
-    else:
-        blocks = []
-    if not blocks:
-        blocks = unique_block_list(inventory.values())
-    return blocks
-
-
-def _split_limits(total: int, num_agents: int) -> List[int]:
-    n = max(1, int(num_agents))
-    per = max(1, int(total) // n)
-    extra = int(total) % n
-    limits = [per] * n
-    limits[0] += extra
-    return limits
+    return get_allowed_blocks(
+        ctx,
+        agent_idx,
+        inventory,
+        unique_block_list=unique_block_list,
+    )
 
 
 def format_followup_prompts(
@@ -88,13 +81,11 @@ def format_followup_prompts(
 
     system_prompt = str(ctx.get("system_prompt") or "").rstrip()
     user_prompt_single = str(ctx.get("user_prompt_single") or "").rstrip()
-    user_prompt_agent1 = str(ctx.get("user_prompt_agent1") or user_prompt_single).rstrip()
-    user_prompt_agent2 = str(ctx.get("user_prompt_agent2") or user_prompt_single).rstrip()
     resource_limits_text = str(ctx.get("resource_limits_text") or "").rstrip()
 
     max_commands_total = int(ctx.get("max_commands_total") or 600)
     limited_resource = bool(ctx.get("limited_resource", False))
-    max_limits = _split_limits(max_commands_total, n)
+    max_limits = split_limits(max_commands_total, n)
 
     task = _task_from_ctx(ctx)
     resource_limits = compute_resource_limits(task, num_agents=n) if limited_resource else None
@@ -155,16 +146,15 @@ def format_followup_prompts(
         wrong_by_agent[0] = wrong_positions
     else:
         allowed_sets = [
-            {normalize_block_id(b) for b in allowed_blocks_by_agent[0]},
-            {normalize_block_id(b) for b in (allowed_blocks_by_agent[1] or allowed_blocks_by_agent[0])},
+            {normalize_block_id(b) for b in allowed_blocks}
+            for allowed_blocks in allowed_blocks_by_agent
         ]
         for idx, (pos, block) in enumerate(wrong_positions):
-            in_a = block in allowed_sets[0]
-            in_b = block in allowed_sets[1]
-            if in_a and not in_b:
-                owner = 0
-            elif in_b and not in_a:
-                owner = 1
+            owners = [
+                agent_idx for agent_idx, allowed_set in enumerate(allowed_sets) if block in allowed_set
+            ]
+            if len(owners) == 1:
+                owner = owners[0]
             else:
                 owner = idx % n
             wrong_by_agent.setdefault(owner, []).append((pos, block))
@@ -181,7 +171,7 @@ def format_followup_prompts(
 
     prompts: List[str] = [""] * n
     for agent_idx in range(n):
-        base_user = user_prompt_single if n == 1 else (user_prompt_agent1 if agent_idx == 0 else user_prompt_agent2)
+        base_user = get_agent_prompt(ctx, agent_idx, default_single=user_prompt_single)
         parts = []
         if system_prompt:
             parts.append(system_prompt)

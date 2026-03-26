@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Mapping
 
+from LLM_Collab_Minecraft.house_build.utils.agent_utils import (
+    parse_agent_overrides,
+    split_limits,
+)
 from LLM_Collab_Minecraft.house_build.utils.house_builder import (
     TaskSpec,
     compute_resource_limits,
@@ -117,8 +121,11 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
         s = str(v).strip()
         return [s] if s else []
 
-    block_agent1_override = _as_block_list(task_cfg.get("block_agent1"))
-    block_agent2_override = _as_block_list(task_cfg.get("block_agent2"))
+    block_agent_overrides = parse_agent_overrides(
+        task_cfg,
+        num_agents=num_agents,
+        parse_list=_as_block_list,
+    )
 
     output_cfg = cfg.get("output") or {}
     if not isinstance(output_cfg, dict):
@@ -198,64 +205,7 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
                 print(f"[house_build raw] agent{idx}:", flush=True)
                 print((raw or "").rstrip(), flush=True)
 
-    if num_agents == 1:
-        max_commands_agent1 = max_commands_total
-
-        def reward_fn(agent1_completions: List[str], *, batch_items: List[Mapping[str, Any]] | None = None) -> List[float]:
-            batch_item = (batch_items or [{}])[0]
-            task = _task_from_batch_item(batch_item)
-            turn_idx = None
-            if isinstance(batch_item, Mapping):
-                turn_idx = batch_item.get("_house_build_turn")
-
-            allowed_blocks = _allowed_blocks_for_task(task, block_agent1_override)
-            resource_limits = compute_resource_limits(task, num_agents=num_agents) if limited_resource else None
-            completion = agent1_completions[0] if agent1_completions else ""
-            lines = extract_command_lines(completion)
-            accepted, _rejected = validate_and_normalize_mc_commands(
-                lines=lines,
-                allowed_blocks=allowed_blocks,
-                world_bbox_from=task.local_bbox_from,
-                world_bbox_to=task.local_bbox_to,
-                max_commands=max_commands_agent1,
-                resource_limits=resource_limits,
-            )
-
-            blocks = simulate_commands_to_scan_blocks(
-                commands=accepted,
-                world_bbox_from=task.local_bbox_from,
-                world_bbox_to=task.local_bbox_to,
-            )
-            metrics = score_house_builder(task=task, world_scan_blocks=blocks)
-            reward = float(metrics.get("score_mean", 0.0))
-            _log_train_metrics(
-                {
-                    "iou": float(metrics.get("iou", 0.0)),
-                    "level_1": float(metrics.get("score_match", 0.0)),
-                    "level_2": 0.0,
-                    "level_total": reward,
-                },
-                turn_idx=turn_idx,
-            )
-            if debug_enabled:
-                _maybe_debug_print(
-                    task=task,
-                    reward=reward,
-                    metrics=metrics,
-                    blocks=blocks,
-                    turn_idx=turn_idx,
-                    raw_outputs=[completion],
-                )
-            return [reward]
-
-        return reward_fn
-
-    if num_agents != 2:
-        raise ValueError("num_agents must be 1 or 2")
-
-    max_commands_per_agent = max(1, max_commands_total // num_agents)
-    max_commands_agent1 = max_commands_per_agent + (max_commands_total % num_agents)
-    max_commands_agent2 = max_commands_per_agent
+    max_commands_by_agent = split_limits(max_commands_total, num_agents)
     player_hp_for_penalty = float(rpg_state.get("player_hp", 0) or 0)
     spider_dmg_for_penalty = float(rpg_state.get("spider_total_dmg", 0) or 0)
 
@@ -269,44 +219,44 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
         return False
 
     def reward_fn(
-        agent1_completions: List[str],
-        agent2_completions: List[str],
-        *,
+        *agent_completions: List[str],
         batch_items: List[Mapping[str, Any]] | None = None,
     ) -> List[float]:
+        if len(agent_completions) != int(num_agents):
+            raise ValueError(
+                f"Expected {int(num_agents)} agent completion lists, got {len(agent_completions)}"
+            )
         batch_item = (batch_items or [{}])[0]
         task = _task_from_batch_item(batch_item)
         turn_idx = None
         if isinstance(batch_item, Mapping):
             turn_idx = batch_item.get("_house_build_turn")
 
-        allowed_blocks_agent1 = _allowed_blocks_for_task(task, block_agent1_override)
-        allowed_blocks_agent2 = _allowed_blocks_for_task(task, block_agent2_override)
         resource_limits = compute_resource_limits(task, num_agents=num_agents) if limited_resource else None
+        accepted_by_agent: List[List[str]] = []
+        raw_outputs: List[str] = []
 
-        c1 = agent1_completions[0] if agent1_completions else ""
-        c2 = agent2_completions[0] if agent2_completions else ""
+        for agent_idx, completions in enumerate(agent_completions):
+            allowed_blocks = _allowed_blocks_for_task(
+                task,
+                block_agent_overrides[agent_idx]
+                if agent_idx < len(block_agent_overrides)
+                else [],
+            )
+            completion = completions[0] if completions else ""
+            raw_outputs.append(completion)
+            lines = extract_command_lines(completion)
+            accepted, _rejected = validate_and_normalize_mc_commands(
+                lines=lines,
+                allowed_blocks=allowed_blocks,
+                world_bbox_from=task.local_bbox_from,
+                world_bbox_to=task.local_bbox_to,
+                max_commands=max_commands_by_agent[agent_idx],
+                resource_limits=resource_limits,
+            )
+            accepted_by_agent.append(accepted)
 
-        lines_1 = extract_command_lines(c1)
-        lines_2 = extract_command_lines(c2)
-        accepted_1, _rejected_1 = validate_and_normalize_mc_commands(
-            lines=lines_1,
-            allowed_blocks=allowed_blocks_agent1,
-            world_bbox_from=task.local_bbox_from,
-            world_bbox_to=task.local_bbox_to,
-            max_commands=max_commands_agent1,
-            resource_limits=resource_limits,
-        )
-        accepted_2, _rejected_2 = validate_and_normalize_mc_commands(
-            lines=lines_2,
-            allowed_blocks=allowed_blocks_agent2,
-            world_bbox_from=task.local_bbox_from,
-            world_bbox_to=task.local_bbox_to,
-            max_commands=max_commands_agent2,
-            resource_limits=resource_limits,
-        )
-
-        merged = [*accepted_1, *accepted_2]
+        merged = [cmd for accepted in accepted_by_agent for cmd in accepted]
         blocks = simulate_commands_to_scan_blocks(
             commands=merged,
             world_bbox_from=task.local_bbox_from,
@@ -316,7 +266,7 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
         reward = float(metrics.get("score_mean", 0.0))
         spider_penalty = 0.0
         if spider_dmg_for_penalty > 0 and player_hp_for_penalty > 0:
-            if not _has_kill(accepted_1) and not _has_kill(accepted_2):
+            if not any(_has_kill(accepted) for accepted in accepted_by_agent):
                 spider_penalty = min(1.0, spider_dmg_for_penalty / player_hp_for_penalty) * 0.1
         reward -= spider_penalty
         _log_train_metrics(
@@ -336,7 +286,7 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
                 metrics=metrics,
                 blocks=blocks,
                 turn_idx=turn_idx,
-                raw_outputs=[c1, c2],
+                raw_outputs=raw_outputs,
             )
         return [reward]
 
