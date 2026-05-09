@@ -9,12 +9,13 @@ set -euo pipefail
 #   CONDA_ENV=llm-collab-mc
 #   PYTHON_VERSION=3.11
 #   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
-#   MODULES="anaconda3 cuda/12.1"
+#   MODULES="Anaconda3"
 #   CONDA_SETUP=/path/to/conda.sh
 
 CONDA_ENV="${CONDA_ENV:-llm-collab-mc}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
+MODULES="${MODULES:-Anaconda3}"
 
 if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; then
   # shellcheck source=/dev/null
@@ -43,7 +44,7 @@ if ! command -v conda >/dev/null 2>&1; then
 fi
 
 if ! command -v conda >/dev/null 2>&1; then
-  echo "conda not found. Load your cluster's conda/anaconda module first, or run with MODULES='anaconda3' / CONDA_SETUP=/path/to/conda.sh." >&2
+  echo "conda not found. Load your cluster's conda/anaconda module first, or run with MODULES='Anaconda3' / CONDA_SETUP=/path/to/conda.sh." >&2
   exit 1
 fi
 

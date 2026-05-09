@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=hb-magrpo-2gpu
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --gres=gpu:2
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=160G
-#SBATCH --time=24:00:00
+#SBATCH --gpus-per-node=2
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=32
+#SBATCH --time=30:00:00
+#SBATCH --account=gzmcagent
+#SBATCH --partition=normal
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
-#
-# Cluster-specific examples. Uncomment and edit for your SuperPOD:
-##SBATCH --partition=YOUR_PARTITION
-##SBATCH --account=YOUR_ACCOUNT
-##SBATCH --constraint=h800
+##SBATCH --exclude=dgx-31,dgx-54
 
 set -euo pipefail
 
@@ -20,7 +17,7 @@ REPO_DIR="${REPO_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 cd "${REPO_DIR}"
 
 CONDA_ENV="${CONDA_ENV:-llm-collab-mc}"
-MODULES="${MODULES:-}"
+MODULES="${MODULES:-Anaconda3}"
 CONDA_SETUP="${CONDA_SETUP:-}"
 AGENT_MODEL="${AGENT_MODEL:-Qwen/Qwen3-4B-Instruct-2507}"
 DTYPE="${DTYPE:-bf16}"
@@ -101,7 +98,7 @@ if ! command -v conda >/dev/null 2>&1; then
 fi
 
 if ! command -v conda >/dev/null 2>&1; then
-  echo "conda not found. Set MODULES='anaconda3' or CONDA_SETUP=/path/to/conda.sh when submitting." >&2
+  echo "conda not found. Set MODULES='Anaconda3' or CONDA_SETUP=/path/to/conda.sh when submitting." >&2
   exit 1
 fi
 

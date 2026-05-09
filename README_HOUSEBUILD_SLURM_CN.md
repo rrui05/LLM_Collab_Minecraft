@@ -23,7 +23,7 @@ git status
 先加载集群的 conda/anaconda 模块。不同 SuperPOD 命令可能不同，例如：
 
 ```bash
-module load anaconda3
+module load Anaconda3
 ```
 
 然后创建环境：
@@ -35,7 +35,7 @@ bash scripts/setup_superpod_env.sh
 如果集群的 conda/anaconda 需要通过 environment module 提供，也可以直接让脚本加载：
 
 ```bash
-MODULES="anaconda3" bash scripts/setup_superpod_env.sh
+MODULES="Anaconda3" bash scripts/setup_superpod_env.sh
 ```
 
 默认环境名是 `llm-collab-mc`。如果 H800 节点的驱动/集群镜像要求不同 CUDA wheel，可以改：
@@ -92,7 +92,7 @@ vim slurm/house_build_magrpo_2gpu.sbatch
 
 - `#SBATCH --partition=...`
 - `#SBATCH --account=...`
-- `#SBATCH --gres=gpu:2`
+- `#SBATCH --gpus-per-node=2`
 - `#SBATCH --constraint=h800` 是否需要
 - `--mem` 和 `--time` 是否符合队列限制
 
@@ -105,7 +105,7 @@ sbatch slurm/house_build_magrpo_2gpu.sbatch
 如果 Slurm batch 作业内默认找不到 conda，不要在 base 里跑；提交时显式传 module 或 conda 初始化脚本：
 
 ```bash
-sbatch --export=ALL,MODULES=anaconda3 slurm/house_build_magrpo_2gpu.sbatch
+sbatch --export=ALL,MODULES=Anaconda3 slurm/house_build_magrpo_2gpu.sbatch
 ```
 
 或者：
@@ -139,7 +139,7 @@ save_final_model: true
 
 ```bash
 sbatch \
-  --export=ALL,DRY_RUN=true,MODULES=anaconda3,RUN_SUFFIX=dryrun \
+  --export=ALL,DRY_RUN=true,MODULES=Anaconda3,RUN_SUFFIX=dryrun \
   slurm/house_build_magrpo_2gpu.sbatch
 ```
 
