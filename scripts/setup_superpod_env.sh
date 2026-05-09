@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Create a clean conda environment for reproducing HouseBuild on a Slurm cluster.
+# Usage:
+#   bash scripts/setup_superpod_env.sh
+#
+# Optional environment variables:
+#   CONDA_ENV=llm-collab-mc
+#   PYTHON_VERSION=3.11
+#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+
+CONDA_ENV="${CONDA_ENV:-llm-collab-mc}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
+
+if ! command -v conda >/dev/null 2>&1; then
+  echo "conda not found. Load your cluster's conda/anaconda module first." >&2
+  exit 1
+fi
+
+eval "$(conda shell.bash hook)"
+
+if conda env list | awk '{print $1}' | grep -Fxq "${CONDA_ENV}"; then
+  echo "Conda env '${CONDA_ENV}' already exists. Reusing it."
+else
+  conda create -y -n "${CONDA_ENV}" "python=${PYTHON_VERSION}" pip
+fi
+
+conda activate "${CONDA_ENV}"
+python -m pip install --upgrade pip
+python -m pip install torch --index-url "${TORCH_INDEX_URL}"
+python -m pip install comlrl==1.3.7 datasets wandb accelerate openai
+
+python - <<'PY'
+import sys
+import torch
+import comlrl
+import transformers
+
+print("python:", sys.executable)
+print("torch:", torch.__version__)
+print("cuda_available:", torch.cuda.is_available())
+print("cuda_count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    for idx in range(torch.cuda.device_count()):
+        print(f"cuda:{idx}", torch.cuda.get_device_name(idx))
+print("comlrl:", getattr(comlrl, "__version__", "no_version"))
+print("transformers:", transformers.__version__)
+PY
+

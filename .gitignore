@@ -34,3 +34,9 @@ house_build/scripts/**/*.out
 
 # Root-level output directories
 /output*/
+
+# Cluster/runtime artifacts
+/runs/
+/.cache/
+/slurm-*.out
+/slurm-*.err
