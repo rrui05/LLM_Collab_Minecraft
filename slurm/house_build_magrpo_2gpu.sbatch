@@ -80,10 +80,7 @@ if command -v module >/dev/null 2>&1; then
   module list || true
 fi
 
-if command -v conda >/dev/null 2>&1; then
-  eval "$(conda shell.bash hook)"
-  conda activate "${CONDA_ENV}"
-else
+if ! command -v conda >/dev/null 2>&1; then
   if [[ -n "${CONDA_SETUP}" && -f "${CONDA_SETUP}" ]]; then
     # shellcheck source=/dev/null
     source "${CONDA_SETUP}"
@@ -97,14 +94,14 @@ else
     # shellcheck source=/dev/null
     source "/opt/conda/etc/profile.d/conda.sh"
   fi
-
-  if command -v conda >/dev/null 2>&1; then
-    conda activate "${CONDA_ENV}"
-  else
-    echo "conda not found. Set MODULES='anaconda3' or CONDA_SETUP=/path/to/conda.sh when submitting." >&2
-    exit 1
-  fi
 fi
+
+if ! command -v conda >/dev/null 2>&1; then
+  echo "conda not found. Set MODULES='anaconda3' or CONDA_SETUP=/path/to/conda.sh when submitting." >&2
+  exit 1
+fi
+
+CONDA_PYTHON=(conda run --no-capture-output -n "${CONDA_ENV}" python)
 
 export WANDB_MODE
 export WANDB_PROJECT
@@ -127,9 +124,10 @@ echo "===== System =====" | tee -a "${LOG_DIR}/env.txt"
   hostname || true
   uname -a || true
   nvidia-smi || true
-  which python || true
-  python --version || true
-  python - <<'PY'
+  conda info --envs || true
+  "${CONDA_PYTHON[@]}" -c 'import sys; print(sys.executable)' || true
+  "${CONDA_PYTHON[@]}" --version || true
+  "${CONDA_PYTHON[@]}" - <<'PY'
 import sys
 import torch
 import comlrl
@@ -146,7 +144,7 @@ print("transformers:", transformers.__version__)
 PY
 } | tee -a "${LOG_DIR}/env.txt"
 
-python -m pip freeze > "${LOG_DIR}/pip-freeze.txt"
+"${CONDA_PYTHON[@]}" -m pip freeze > "${LOG_DIR}/pip-freeze.txt"
 
 (
   while true; do
@@ -221,7 +219,7 @@ OVERRIDES=(
 )
 
 {
-  printf '%s\n' "python house_build/train/train_magrpo.py --config house_build/configs/house_build_magrpo_config.yaml --override \\"
+  printf '%s\n' "conda run --no-capture-output -n ${CONDA_ENV} python house_build/train/train_magrpo.py --config house_build/configs/house_build_magrpo_config.yaml --override \\"
   printf '  %q \\\n' "${OVERRIDES[@]}"
 } > "${LOG_DIR}/command.txt"
 
@@ -238,7 +236,7 @@ case "${DRY_RUN}" in
     ;;
 esac
 
-python house_build/train/train_magrpo.py \
+"${CONDA_PYTHON[@]}" house_build/train/train_magrpo.py \
   --config house_build/configs/house_build_magrpo_config.yaml \
   --override "${OVERRIDES[@]}"
 
