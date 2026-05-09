@@ -21,7 +21,7 @@ if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; th
   source /etc/profile.d/modules.sh || true
 fi
 
-if command -v module >/dev/null 2>&1 && [[ -n "${MODULES:-}" ]]; then
+if ! command -v conda >/dev/null 2>&1 && command -v module >/dev/null 2>&1 && [[ -n "${MODULES:-}" ]]; then
   for mod in ${MODULES}; do
     echo "module load ${mod}"
     module load "${mod}"

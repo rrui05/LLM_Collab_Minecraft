@@ -72,10 +72,14 @@ if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; th
 fi
 if command -v module >/dev/null 2>&1; then
   if [[ -n "${MODULES}" ]]; then
-    for mod in ${MODULES}; do
-      echo "module load ${mod}"
-      module load "${mod}"
-    done
+    if command -v conda >/dev/null 2>&1; then
+      echo "conda already found; skipping MODULES='${MODULES}'"
+    else
+      for mod in ${MODULES}; do
+        echo "module load ${mod}"
+        module load "${mod}"
+      done
+    fi
   fi
   module list || true
 fi
