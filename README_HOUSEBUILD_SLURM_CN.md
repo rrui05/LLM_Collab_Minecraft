@@ -99,19 +99,25 @@ vim slurm/house_build_magrpo_2gpu.sbatch
 提交默认 HouseBuild MAGRPO：
 
 ```bash
-sbatch --account=gzmcagent slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh
+```
+
+也可以使用和 `rrui05/MAGRPO` 类似的配置文件入口：
+
+```bash
+bash scripts/submit_housebuild_slurm_job.sh configs/cluster/house_build_2gpu.env
 ```
 
 如果 Slurm batch 作业内默认找不到 conda，不要在 base 里跑；提交时显式传 module 或 conda 初始化脚本：
 
 ```bash
-sbatch --account=gzmcagent --export=ALL,MODULES=Anaconda3 slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh MODULES=Anaconda3
 ```
 
 或者：
 
 ```bash
-sbatch --account=gzmcagent --export=ALL,CONDA_SETUP=/path/to/conda.sh slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh CONDA_SETUP=/path/to/conda.sh
 ```
 
 默认训练配置：
@@ -138,19 +144,28 @@ save_final_model: true
 正式训练前可以先提交一个 Slurm dry run。它会进入 batch 环境、激活 conda、记录环境和生成完整训练命令，但不会启动训练：
 
 ```bash
-sbatch \
-  --account=gzmcagent \
-  --export=ALL,DRY_RUN=true,MODULES=Anaconda3,RUN_SUFFIX=dryrun \
-  slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh DRY_RUN=true RUN_SUFFIX=dryrun
+```
+
+或：
+
+```bash
+bash scripts/submit_housebuild_slurm_job.sh configs/cluster/house_build_2gpu.env DRY_RUN=true RUN_SUFFIX=dryrun
 ```
 
 第一次不要直接跑完整 4B 配置。建议先提交一个小模型 smoke test，验证环境、W&B、日志和数据链路：
 
 ```bash
-sbatch \
-  --account=gzmcagent \
-  --export=ALL,AGENT_MODEL=Qwen/Qwen2.5-0.5B-Instruct,RUN_SUFFIX=smoke,TRAIN_SPLIT='[:1]',EVAL_SPLIT=None,NUM_EPOCHS=1,NUM_TURNS=1,MAX_NEW_TOKENS=32,EVAL_INTERVAL=0,SAVE_FINAL_MODEL=false \
-  slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh \
+  AGENT_MODEL=Qwen/Qwen2.5-0.5B-Instruct \
+  RUN_SUFFIX=smoke \
+  TRAIN_SPLIT='[:1]' \
+  EVAL_SPLIT=None \
+  NUM_EPOCHS=1 \
+  NUM_TURNS=1 \
+  MAX_NEW_TOKENS=32 \
+  EVAL_INTERVAL=0 \
+  SAVE_FINAL_MODEL=false
 ```
 
 smoke test 通过后，再跑默认完整配置。
@@ -160,25 +175,25 @@ smoke test 通过后，再跑默认完整配置。
 换模型：
 
 ```bash
-sbatch --account=gzmcagent --export=ALL,AGENT_MODEL=Qwen/Qwen2.5-1.5B-Instruct,RUN_SUFFIX=qwen25_15b slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh AGENT_MODEL=Qwen/Qwen2.5-1.5B-Instruct RUN_SUFFIX=qwen25_15b
 ```
 
 改 epoch：
 
 ```bash
-sbatch --account=gzmcagent --export=ALL,NUM_EPOCHS=5,RUN_SUFFIX=epoch5 slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh NUM_EPOCHS=5 RUN_SUFFIX=epoch5
 ```
 
 改 turn 数：
 
 ```bash
-sbatch --account=gzmcagent --export=ALL,NUM_TURNS=2,RUN_SUFFIX=turn2 slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh NUM_TURNS=2 RUN_SUFFIX=turn2
 ```
 
 改 W&B project：
 
 ```bash
-sbatch --account=gzmcagent --export=ALL,WANDB_PROJECT=llm-collab-housebuild,RUN_SUFFIX=wandb_test slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh WANDB_PROJECT=llm-collab-housebuild RUN_SUFFIX=wandb_test
 ```
 
 ## 7. 日志位置
@@ -194,6 +209,7 @@ runs/house_build/<run_name>/
     pip-freeze.txt
     command.txt
     overrides.txt
+    slurm_submit_command.txt
     nvidia-smi.log
   wandb/
   output/
@@ -303,7 +319,7 @@ AGENT_MODEL=Qwen/Qwen2.5-1.5B-Instruct
 如果要完全离线跑 W&B：
 
 ```bash
-sbatch --account=gzmcagent --export=ALL,WANDB_MODE=offline,RUN_SUFFIX=offline_test slurm/house_build_magrpo_2gpu.sbatch
+bash scripts/submit_housebuild_slurm_job.sh WANDB_MODE=offline RUN_SUFFIX=offline_test
 ```
 
 不过正式复现建议 `WANDB_MODE=online`，方便记录完整曲线和环境信息。

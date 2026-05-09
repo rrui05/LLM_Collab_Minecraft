@@ -60,6 +60,7 @@ echo "repo_dir=${REPO_DIR}"
 echo "run_dir=${RUN_DIR}"
 echo "slurm_job_id=${SLURM_JOB_ID:-none}"
 echo "slurm_node_list=${SLURM_NODELIST:-none}"
+echo "sbatch_launch_args=${SBATCH_LAUNCH_ARGS:-}"
 echo "dry_run=${DRY_RUN}"
 
 if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; then
@@ -225,6 +226,7 @@ OVERRIDES=(
 } > "${LOG_DIR}/command.txt"
 
 printf '%s\n' "${OVERRIDES[@]}" > "${LOG_DIR}/overrides.txt"
+printf 'sbatch %s %s\n' "${SBATCH_LAUNCH_ARGS:---export=ALL}" "${REPO_DIR}/slurm/house_build_magrpo_2gpu.sbatch" > "${LOG_DIR}/slurm_submit_command.txt"
 
 echo "===== Training Command ====="
 cat "${LOG_DIR}/command.txt"
