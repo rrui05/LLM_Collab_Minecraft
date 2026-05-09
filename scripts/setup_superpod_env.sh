@@ -9,13 +9,26 @@ set -euo pipefail
 #   CONDA_ENV=llm-collab-mc
 #   PYTHON_VERSION=3.11
 #   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+#   MODULES="anaconda3 cuda/12.1"
 
 CONDA_ENV="${CONDA_ENV:-llm-collab-mc}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
 
+if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; then
+  # shellcheck source=/dev/null
+  source /etc/profile.d/modules.sh || true
+fi
+
+if command -v module >/dev/null 2>&1 && [[ -n "${MODULES:-}" ]]; then
+  for mod in ${MODULES}; do
+    echo "module load ${mod}"
+    module load "${mod}"
+  done
+fi
+
 if ! command -v conda >/dev/null 2>&1; then
-  echo "conda not found. Load your cluster's conda/anaconda module first." >&2
+  echo "conda not found. Load your cluster's conda/anaconda module first, or run with MODULES='anaconda3'." >&2
   exit 1
 fi
 
@@ -48,4 +61,3 @@ if torch.cuda.is_available():
 print("comlrl:", getattr(comlrl, "__version__", "no_version"))
 print("transformers:", transformers.__version__)
 PY
-

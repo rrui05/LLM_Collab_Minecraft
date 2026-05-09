@@ -20,6 +20,8 @@ REPO_DIR="${REPO_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 cd "${REPO_DIR}"
 
 CONDA_ENV="${CONDA_ENV:-llm-collab-mc}"
+MODULES="${MODULES:-}"
+CONDA_SETUP="${CONDA_SETUP:-}"
 AGENT_MODEL="${AGENT_MODEL:-Qwen/Qwen3-4B-Instruct-2507}"
 DTYPE="${DTYPE:-bf16}"
 
@@ -37,6 +39,7 @@ EVAL_INTERVAL="${EVAL_INTERVAL:-2}"
 EVAL_NUM_SAMPLES="${EVAL_NUM_SAMPLES:-2}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-1}"
 SAVE_FINAL_MODEL="${SAVE_FINAL_MODEL:-true}"
+DRY_RUN="${DRY_RUN:-false}"
 
 WANDB_PROJECT="${WANDB_PROJECT:-house_build}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
@@ -60,8 +63,20 @@ echo "repo_dir=${REPO_DIR}"
 echo "run_dir=${RUN_DIR}"
 echo "slurm_job_id=${SLURM_JOB_ID:-none}"
 echo "slurm_node_list=${SLURM_NODELIST:-none}"
+echo "dry_run=${DRY_RUN}"
 
+if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile.d/modules.sh ]]; then
+  # Some Slurm jobs do not source the environment-modules init script by default.
+  # shellcheck source=/dev/null
+  source /etc/profile.d/modules.sh || true
+fi
 if command -v module >/dev/null 2>&1; then
+  if [[ -n "${MODULES}" ]]; then
+    for mod in ${MODULES}; do
+      echo "module load ${mod}"
+      module load "${mod}"
+    done
+  fi
   module list || true
 fi
 
@@ -69,8 +84,26 @@ if command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"
   conda activate "${CONDA_ENV}"
 else
-  echo "conda not found in PATH. Load conda before sbatch or set PATH in this script." >&2
-  exit 1
+  if [[ -n "${CONDA_SETUP}" && -f "${CONDA_SETUP}" ]]; then
+    # shellcheck source=/dev/null
+    source "${CONDA_SETUP}"
+  elif [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${HOME}/miniconda3/etc/profile.d/conda.sh"
+  elif [[ -f "${HOME}/anaconda3/etc/profile.d/conda.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${HOME}/anaconda3/etc/profile.d/conda.sh"
+  elif [[ -f "/opt/conda/etc/profile.d/conda.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "/opt/conda/etc/profile.d/conda.sh"
+  fi
+
+  if command -v conda >/dev/null 2>&1; then
+    conda activate "${CONDA_ENV}"
+  else
+    echo "conda not found. Set MODULES='anaconda3' or CONDA_SETUP=/path/to/conda.sh when submitting." >&2
+    exit 1
+  fi
 fi
 
 export WANDB_MODE
@@ -130,6 +163,23 @@ if [[ -n "${WANDB_ENTITY}" ]]; then
   WANDB_ENTITY_OVERRIDE="wandb.entity='${WANDB_ENTITY}'"
 fi
 
+WANDB_TAG_OVERRIDE="wandb.tags=[]"
+if [[ -n "${WANDB_TAGS}" ]]; then
+  IFS=',' read -r -a WANDB_TAG_ARRAY <<< "${WANDB_TAGS}"
+  WANDB_TAG_OVERRIDE="wandb.tags=["
+  TAG_SEP=""
+  for tag in "${WANDB_TAG_ARRAY[@]}"; do
+    tag="${tag#"${tag%%[![:space:]]*}"}"
+    tag="${tag%"${tag##*[![:space:]]}"}"
+    tag="${tag//\'/}"
+    if [[ -n "${tag}" ]]; then
+      WANDB_TAG_OVERRIDE+="${TAG_SEP}'${tag}'"
+      TAG_SEP=","
+    fi
+  done
+  WANDB_TAG_OVERRIDE+="]"
+fi
+
 EVAL_SPLIT_OVERRIDE="dataset.eval_split='${EVAL_SPLIT}'"
 case "${EVAL_SPLIT}" in
   None|none|null|NULL|"")
@@ -167,7 +217,7 @@ OVERRIDES=(
   "${WANDB_ENTITY_OVERRIDE}"
   "wandb.run_name='${RUN_NAME}'"
   "wandb.dir='${RUN_DIR}/wandb'"
-  "wandb.tags=['${WANDB_TAGS//,/','}']"
+  "${WANDB_TAG_OVERRIDE}"
 )
 
 {
@@ -180,6 +230,13 @@ printf '%s\n' "${OVERRIDES[@]}" > "${LOG_DIR}/overrides.txt"
 echo "===== Training Command ====="
 cat "${LOG_DIR}/command.txt"
 echo "===== Start Training ====="
+
+case "${DRY_RUN}" in
+  true|TRUE|1|yes|YES)
+    echo "DRY_RUN=true; environment and command generation finished, skipping training."
+    exit 0
+    ;;
+esac
 
 python house_build/train/train_magrpo.py \
   --config house_build/configs/house_build_magrpo_config.yaml \

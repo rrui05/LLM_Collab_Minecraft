@@ -32,6 +32,12 @@ module load anaconda3
 bash scripts/setup_superpod_env.sh
 ```
 
+如果集群的 conda/anaconda 需要通过 environment module 提供，也可以直接让脚本加载：
+
+```bash
+MODULES="anaconda3" bash scripts/setup_superpod_env.sh
+```
+
 默认环境名是 `llm-collab-mc`。如果 H800 节点的驱动/集群镜像要求不同 CUDA wheel，可以改：
 
 ```bash
@@ -96,6 +102,18 @@ vim slurm/house_build_magrpo_2gpu.sbatch
 sbatch slurm/house_build_magrpo_2gpu.sbatch
 ```
 
+如果 Slurm batch 作业内默认找不到 conda，不要在 base 里跑；提交时显式传 module 或 conda 初始化脚本：
+
+```bash
+sbatch --export=ALL,MODULES=anaconda3 slurm/house_build_magrpo_2gpu.sbatch
+```
+
+或者：
+
+```bash
+sbatch --export=ALL,CONDA_SETUP=/path/to/conda.sh slurm/house_build_magrpo_2gpu.sbatch
+```
+
 默认训练配置：
 
 ```text
@@ -116,6 +134,14 @@ save_final_model: true
 ```
 
 ## 5. 推荐先跑 smoke test
+
+正式训练前可以先提交一个 Slurm dry run。它会进入 batch 环境、激活 conda、记录环境和生成完整训练命令，但不会启动训练：
+
+```bash
+sbatch \
+  --export=ALL,DRY_RUN=true,MODULES=anaconda3,RUN_SUFFIX=dryrun \
+  slurm/house_build_magrpo_2gpu.sbatch
+```
 
 第一次不要直接跑完整 4B 配置。建议先提交一个小模型 smoke test，验证环境、W&B、日志和数据链路：
 
