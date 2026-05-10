@@ -323,3 +323,53 @@ bash scripts/submit_housebuild_slurm_job.sh WANDB_MODE=offline RUN_SUFFIX=offlin
 ```
 
 不过正式复现建议 `WANDB_MODE=online`，方便记录完整曲线和环境信息。
+
+## 11. 训练后直接推理
+
+训练脚本默认把最终模型保存为：
+
+```text
+runs/house_build/<run_name>/final_model/agent_0
+runs/house_build/<run_name>/final_model/agent_1
+```
+
+我另外放了一个不在默认训练集 `[:8]`、也不在默认验证集 `[8:]` 里的全新任务：
+
+```text
+house_build/dataset/unseen_eval.json
+```
+
+提交 2 卡推理作业：
+
+```bash
+bash scripts/submit_housebuild_infer_slurm_job.sh
+```
+
+它默认会找最新的：
+
+```text
+runs/house_build/*/final_model
+```
+
+然后对 `unseen_eval.json` 做 4-turn 推理，输出两个 agent 的命令、每轮 raw reward、processed reward、match、iou，并把完整结果写到：
+
+```text
+runs/house_build_infer/<run_name>/results/inference.jsonl
+```
+
+如果要指定某次训练出的模型：
+
+```bash
+bash scripts/submit_housebuild_infer_slurm_job.sh \
+  MODEL_DIR=/project/gzmcagent/LLM_Collab_Minecraft/runs/house_build/<run_name>/final_model \
+  RUN_SUFFIX=unseen_test
+```
+
+如果想看默认 `data.json` 里的验证集 `[8:]`：
+
+```bash
+bash scripts/submit_housebuild_infer_slurm_job.sh \
+  DATASET_JSON=/project/gzmcagent/LLM_Collab_Minecraft/house_build/dataset/data.json \
+  SPLIT='[8:]' \
+  RUN_SUFFIX=default_eval
+```

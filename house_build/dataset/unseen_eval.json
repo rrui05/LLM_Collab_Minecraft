@@ -1,0 +1,120 @@
+[
+  {
+    "task_id": "house_build_unseen_tower_0001",
+    "inventory": {
+      "C": "white_concrete",
+      "O": "obsidian",
+      "S": "stone_stairs",
+      "B": "stone_bricks",
+      "D": "planks",
+      "A": "air"
+    },
+    "target_spec": {
+      "type": "y_layers",
+      "size": [
+        7,
+        7,
+        7
+      ],
+      "layers": [
+        {
+          "y": 0,
+          "rows": [
+            "AAAAAAA",
+            "ACCCCCA",
+            "ACCCCCA",
+            "ACCCCCA",
+            "ACCCCCA",
+            "ACCCCCA",
+            "AAAAAAA"
+          ]
+        },
+        {
+          "y": 1,
+          "rows": [
+            "AAAAAAA",
+            "AOBDBOA",
+            "ABAAABA",
+            "ABAAABA",
+            "ABAAABA",
+            "AOBBBOA",
+            "AAAAAAA"
+          ]
+        },
+        {
+          "y": 2,
+          "rows": [
+            "AAAAAAA",
+            "AOCCCOA",
+            "ACAAACA",
+            "ACAAACA",
+            "ACAAACA",
+            "AOCCCOA",
+            "AAAAAAA"
+          ]
+        },
+        {
+          "y": 3,
+          "rows": [
+            "AAAAAAA",
+            "AOCCCOA",
+            "ACAAACA",
+            "ACAAACA",
+            "ACAAACA",
+            "AOCCCOA",
+            "AAAAAAA"
+          ]
+        },
+        {
+          "y": 4,
+          "rows": [
+            "SSSSSSS",
+            "SBBBBBS",
+            "SBBBBBS",
+            "SBBBBBS",
+            "SBBBBBS",
+            "SBBBBBS",
+            "SSSSSSS"
+          ]
+        },
+        {
+          "y": 5,
+          "rows": [
+            "AAAAAAA",
+            "ASSSSSA",
+            "ASBBBSA",
+            "ASBBBSA",
+            "ASBBBSA",
+            "ASSSSSA",
+            "AAAAAAA"
+          ]
+        },
+        {
+          "y": 6,
+          "rows": [
+            "AAAAAAA",
+            "AAAAAAA",
+            "AASSSAA",
+            "AASBSAA",
+            "AASSSAA",
+            "AAAAAAA",
+            "AAAAAAA"
+          ]
+        }
+      ]
+    },
+    "bbox": {
+      "from": [
+        0,
+        0,
+        0
+      ],
+      "to": [
+        6,
+        6,
+        6
+      ]
+    },
+    "note": "Unseen evaluation task. It is not included in the default train split [:8] or eval split [8:] from data.json."
+  }
+]
