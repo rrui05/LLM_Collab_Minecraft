@@ -1,4 +1,4 @@
-# HouseBuild 在 Slurm SuperPOD 上复现
+# HouseBuild MAGRPO baseline 在 Slurm SuperPOD 上复现
 
 本文档面向你 fork 后的仓库：
 
@@ -6,7 +6,9 @@
 https://github.com/rrui05/LLM_Collab_Minecraft
 ```
 
-目标先只复现 HouseBuild 的 MAGRPO 训练。当前 CoMLRL 的 `parallel_training=mp` 不是 FSDP/DeepSpeed 数据并行，而是把不同 agent/critic 分配到不同 GPU。HouseBuild MAGRPO 默认 `num_agents=2`，所以这里用 1 个节点、2 张 H800：Agent 0 放 `cuda:0`，Agent 1 放 `cuda:1`。
+注意：本文档只保留 MAGRPO baseline 的 Slurm 入口，不是当前主目标。论文中的 CoLLM-CC 复现入口见 `README_HOUSEBUILD_COLLM_CC_SLURM_CN.md`。
+
+当前 CoMLRL 的 `parallel_training=mp` 不是 FSDP/DeepSpeed 数据并行，而是把不同 agent/critic 分配到不同 GPU。HouseBuild MAGRPO 默认 `num_agents=2`，所以这里用 1 个节点、2 张 H800：Agent 0 放 `cuda:0`，Agent 1 放 `cuda:1`。
 
 ## 1. 准备代码
 

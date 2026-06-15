@@ -50,6 +50,9 @@ python3 house_build/train/train_iac.py --config house_build/configs/house_build_
 python3 house_build/train/train_maac.py --config house_build/configs/house_build_maac_config.yaml
 ```
 
+For the paper target HouseBuild CoLLM-CC run, use the MAAC centralized-critic
+path and the Slurm wrapper in `README_HOUSEBUILD_COLLM_CC_SLURM_CN.md`.
+
 Override any configuration value inline with `--override`:
 
 ```bash

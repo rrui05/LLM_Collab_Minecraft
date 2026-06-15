@@ -2,11 +2,11 @@ from __future__ import annotations
 
 """External transition utilities for multi-turn training on house_build.
 
-CoMLRL's MAGRPOTrainer supports multi-turn rollouts via an `external_transition`
+CoMLRL trainers support multi-turn rollouts via an `external_transition`
 callback. This module provides a small adapter that:
 
 - Resolves a dataset-level prompt key (e.g., "house_build:...") into a context dict.
-- Builds next-turn prompts for each agent using `mode=perfect_feedback`.
+- Builds next-turn prompts for each agent using the configured feedback mode.
 """
 
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union

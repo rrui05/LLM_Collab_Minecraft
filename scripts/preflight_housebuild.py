@@ -186,7 +186,7 @@ def run_preflight(config_path: Path, expect_cuda_devices: int | None) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate HouseBuild reproduction wiring without loading models.")
+    parser = argparse.ArgumentParser(description="Validate HouseBuild MAGRPO baseline wiring without loading models.")
     parser.add_argument(
         "--config",
         default=str(REPO_ROOT / "house_build" / "configs" / "house_build_magrpo_config.yaml"),
