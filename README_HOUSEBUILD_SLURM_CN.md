@@ -57,7 +57,37 @@ bash scripts/setup_superpod_env.sh
 
 并打印 `torch.cuda.is_available()` 和 GPU 名称。
 
-## 3. 配置 W&B
+注意：论文 release 指向 CoMLRL `v1.3.6`，但这里的 2 卡 Slurm workflow 需要 PyPI `comlrl==1.3.7`，因为它暴露了 `parallel_training` 和 `agent_devices`，可以把两个 HouseBuild agent 显式放到 `cuda:0` / `cuda:1`。
+
+## 3. 训练前 preflight
+
+正式 `sbatch` 前先跑轻量检查。这个脚本不会下载或加载 Qwen 模型，只验证 CoMLRL 接口、CUDA 数量、HouseBuild 数据集、prompt、reward、external feedback 和 2 卡参数覆盖：
+
+```bash
+conda activate llm-collab-mc
+python scripts/preflight_housebuild.py --expect-cuda-devices 2
+```
+
+如果只想在登录节点检查代码和配置，不要求可见 GPU：
+
+```bash
+python scripts/preflight_housebuild.py
+```
+
+重点看输出里的：
+
+```text
+HouseBuild preflight OK
+comlrl: 1.3.7
+cuda_count: 2
+tasks/train/eval: 10/8/2
+magrpo.parallel_training: mp
+magrpo.agent_devices: ['cuda:0', 'cuda:1']
+```
+
+如果这里显示 `comlrl` 没有 `parallel_training` 或 `agent_devices`，说明环境装成了旧接口，2 GPU Slurm 复现不会按预期把两个 agent 分到两张卡。
+
+## 4. 配置 W&B
 
 训练脚本默认连 W&B online。先登录：
 
@@ -80,7 +110,7 @@ export WANDB_ENTITY=你的wandb实体名
 
 如果不设置 `WANDB_ENTITY`，sbatch 会把 `wandb.entity=None` 传给训练脚本，避免误用原 config 里的 `OpenMLRL`。
 
-## 4. 提交 2 卡训练
+## 5. 提交 2 卡训练
 
 先按你们集群改 Slurm 头部：
 
@@ -139,7 +169,7 @@ wandb: enabled
 save_final_model: true
 ```
 
-## 5. 推荐先跑 smoke test
+## 6. 推荐先跑 smoke test
 
 正式训练前可以先提交一个 Slurm dry run。它会进入 batch 环境、激活 conda、记录环境和生成完整训练命令，但不会启动训练：
 
@@ -170,7 +200,7 @@ bash scripts/submit_housebuild_slurm_job.sh \
 
 smoke test 通过后，再跑默认完整配置。
 
-## 6. 常用覆盖参数
+## 7. 常用覆盖参数
 
 换模型：
 
@@ -196,7 +226,7 @@ bash scripts/submit_housebuild_slurm_job.sh NUM_TURNS=2 RUN_SUFFIX=turn2
 bash scripts/submit_housebuild_slurm_job.sh WANDB_PROJECT=llm-collab-housebuild RUN_SUFFIX=wandb_test
 ```
 
-## 7. 日志位置
+## 8. 日志位置
 
 每次运行会生成：
 
@@ -244,7 +274,7 @@ tail -f runs/house_build/<run_name>/logs/stderr.log
 tail -f runs/house_build/<run_name>/logs/nvidia-smi.log
 ```
 
-## 8. 训练到底在做什么
+## 9. 训练到底在做什么
 
 这个仓库当前没有真实 Minecraft server/Mineflayer 运行闭环。HouseBuild 训练过程是：
 
@@ -277,7 +307,7 @@ reward_processor:
 
 因此训练器实际看到的 reward 会做 shift。
 
-## 9. W&B 指标
+## 10. W&B 指标
 
 训练会记录：
 
@@ -294,7 +324,7 @@ W&B run name 默认：
 house_build_magrpo_2gpu_<suffix>_<timestamp>
 ```
 
-## 10. 失败排查
+## 11. 失败排查
 
 如果 W&B 报 entity 无权限：
 
@@ -324,7 +354,7 @@ bash scripts/submit_housebuild_slurm_job.sh WANDB_MODE=offline RUN_SUFFIX=offlin
 
 不过正式复现建议 `WANDB_MODE=online`，方便记录完整曲线和环境信息。
 
-## 11. 训练后直接推理
+## 12. 训练后直接推理
 
 训练脚本默认把最终模型保存为：
 
