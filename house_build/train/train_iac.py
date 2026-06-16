@@ -588,10 +588,13 @@ def main() -> int:
         prompts: List[str] | None = None,
         batch_items: List[Mapping[str, Any]] | None = None,
     ) -> List[float]:
+        prompt_item = _lookup_item(list(prompts or []))
         if batch_items:
             batch_item = dict(batch_items[0])
+            if "_house_build_turn" in prompt_item:
+                batch_item["_house_build_turn"] = prompt_item["_house_build_turn"]
         else:
-            batch_item = _lookup_item(list(prompts or []))
+            batch_item = prompt_item
         return reward_base(*agent_completions, batch_items=[batch_item])
 
     reward_processor = None
