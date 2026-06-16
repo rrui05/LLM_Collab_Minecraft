@@ -84,10 +84,10 @@ maac:
   num_agents: 2
   num_turns: 4
   critic_type: v
-  num_generations: 1
-  num_train_epochs: 150
+  num_generations: 2
+  num_train_epochs: 120
   agent_learning_rate: 5e-6
-  critic_learning_rate: 5e-6
+  critic_learning_rate: 3e-6
   value_loss_coef: 0.6
   rollout_buffer_size: 1
   train_batch_size: 1

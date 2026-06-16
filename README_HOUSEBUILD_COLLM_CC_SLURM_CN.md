@@ -25,17 +25,18 @@ train split:  HouseBuild[:8]
 eval split:   HouseBuild[8:]
 num_agents:   2
 num_turns:    4
+num_generations: 2
 critic_type:  v
-epochs:       150
+epochs:       120
 actor lr:     5e-6
-critic lr:    5e-6
+critic lr:    3e-6
 rollout_buffer_size: 1
 train_batch_size:    1
 max_new_tokens:      512
 eval_num_samples:    2
 ```
 
-注意：当前 `comlrl` 多轮 MAAC 实现要求 `num_generations == 1`。论文附录 Minecraft 写的是 `num_generations=2`，但源码 `MAACTrainer._collect_rollouts_multi_turn` 对 `num_turns > 1` 会检查并拒绝 `num_generations != 1`。因此本仓库用源码可运行写法：多轮 CoLLM-CC 单条 joint rollout + centralized critic。
+注意：HouseBuild CoLLM-CC 入口使用 `PaperAlignedMAACTrainer`，已覆盖上游 `comlrl` 多轮 MAAC 对 `num_generations == 1` 的旧限制。当前配置使用 `num_turns=4`、`num_generations=2`，按 aligned joint generations 分支收集 multi-turn rollouts，并使用 shared centralized critic 更新。
 
 ## 3. 创建环境
 
@@ -114,4 +115,3 @@ runs/house_build_collm_cc/<run_name>/
 ```
 
 `final_model/critic/value_head.pt` 是 centralized critic 的 value head。推理时通常只需要 actor agents；critic 用于训练。
-

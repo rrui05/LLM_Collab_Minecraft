@@ -191,7 +191,6 @@ def run_preflight(config_path: Path, expect_cuda_devices: int | None, token_stat
     cfg["maac"]["parallel_training"] = "mp"
     cfg["maac"]["agent_devices"] = ["cuda:0", "cuda:1"]
     cfg["maac"]["critic_devices"] = ["cuda:2"]
-    cfg["maac"]["num_generations"] = 1
     sampling_cfg = get_agent_sampling_config(cfg)
     trainer_args = get_maac_args(cfg, sampling_cfg=sampling_cfg)
     _check(getattr(trainer_args, "parallel_training", None) == "mp", "parallel_training override did not stick.")
@@ -205,9 +204,8 @@ def run_preflight(config_path: Path, expect_cuda_devices: int | None, token_stat
         "critic_devices override did not stick.",
     )
     _check(
-        int(getattr(trainer_args, "num_turns", 1)) <= 1
-        or int(getattr(trainer_args, "num_generations", 1)) == 1,
-        "Current CoMLRL multi-turn MAAC requires num_generations == 1.",
+        int(getattr(trainer_args, "num_generations", 1)) >= 1,
+        "num_generations must be >= 1.",
     )
 
     agent_model = str((cfg.get("agent_model") or {}).get("name") or "")

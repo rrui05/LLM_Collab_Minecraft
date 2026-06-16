@@ -4,8 +4,10 @@ from typing import Any, Dict, Optional
 import inspect
 
 from comlrl.trainers.actor_critic import IACConfig  # type: ignore
-from comlrl.trainers.actor_critic import MAACConfig  # type: ignore
 from comlrl.trainers.reinforce import MAGRPOConfig  # type: ignore
+from LLM_Collab_Minecraft.house_build.train.paper_maac import (  # type: ignore
+    PaperAlignedMAACConfig as MAACConfig,
+)
 
 
 def _as_int(x: Any, default: int) -> int:

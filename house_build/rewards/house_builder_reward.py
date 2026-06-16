@@ -285,109 +285,121 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
             turn_idx = batch_item.get("_house_build_turn")
 
         resource_limits = compute_resource_limits(task, num_agents=num_agents) if limited_resource else None
-        accepted_by_agent: List[List[str]] = []
-        rejected_by_agent: List[List[str]] = []
-        extracted_lines_by_agent: List[List[str]] = []
-        raw_outputs: List[str] = []
+        num_generations = max((len(completions) for completions in agent_completions), default=1)
+        num_generations = max(1, int(num_generations))
+        rewards: List[float] = []
 
-        for agent_idx, completions in enumerate(agent_completions):
-            allowed_blocks = _allowed_blocks_for_task(
-                task,
-                block_agent_overrides[agent_idx]
-                if agent_idx < len(block_agent_overrides)
-                else [],
-            )
-            completion = completions[0] if completions else ""
-            raw_outputs.append(completion)
-            lines = extract_command_lines(completion)
-            extracted_lines_by_agent.append(lines)
-            accepted, rejected = validate_and_normalize_mc_commands(
-                lines=lines,
-                allowed_blocks=allowed_blocks,
+        for generation_idx in range(num_generations):
+            accepted_by_agent: List[List[str]] = []
+            rejected_by_agent: List[List[str]] = []
+            extracted_lines_by_agent: List[List[str]] = []
+            raw_outputs: List[str] = []
+
+            for agent_idx, completions in enumerate(agent_completions):
+                allowed_blocks = _allowed_blocks_for_task(
+                    task,
+                    block_agent_overrides[agent_idx]
+                    if agent_idx < len(block_agent_overrides)
+                    else [],
+                )
+                if generation_idx < len(completions):
+                    completion = completions[generation_idx]
+                elif completions:
+                    completion = completions[-1]
+                else:
+                    completion = ""
+                raw_outputs.append(completion)
+                lines = extract_command_lines(completion)
+                extracted_lines_by_agent.append(lines)
+                accepted, rejected = validate_and_normalize_mc_commands(
+                    lines=lines,
+                    allowed_blocks=allowed_blocks,
+                    world_bbox_from=task.local_bbox_from,
+                    world_bbox_to=task.local_bbox_to,
+                    max_commands=max_commands_by_agent[agent_idx],
+                    resource_limits=resource_limits,
+                )
+                accepted_by_agent.append(accepted)
+                rejected_by_agent.append(rejected)
+
+            merged = [cmd for accepted in accepted_by_agent for cmd in accepted]
+            blocks = simulate_commands_to_scan_blocks(
+                commands=merged,
                 world_bbox_from=task.local_bbox_from,
                 world_bbox_to=task.local_bbox_to,
-                max_commands=max_commands_by_agent[agent_idx],
-                resource_limits=resource_limits,
             )
-            accepted_by_agent.append(accepted)
-            rejected_by_agent.append(rejected)
-
-        merged = [cmd for accepted in accepted_by_agent for cmd in accepted]
-        blocks = simulate_commands_to_scan_blocks(
-            commands=merged,
-            world_bbox_from=task.local_bbox_from,
-            world_bbox_to=task.local_bbox_to,
-        )
-        metrics = score_house_builder(task=task, world_scan_blocks=blocks)
-        if reward_mode in ("paper", "paper_aligned", "collm_paper"):
-            build_reward = (
-                coverage_weight * float(metrics.get("coverage_rate", 0.0))
-                - redundancy_weight * float(metrics.get("redundancy_rate", 0.0))
-            )
-        elif reward_mode in ("match", "exact", "legacy"):
-            build_reward = float(metrics.get("score_mean", 0.0))
-        else:
-            raise ValueError(f"Unsupported house_build reward.mode: {reward_mode}")
-
-        spider_penalty = 0.0
-        if spider_dmg_for_penalty > 0 and player_hp_for_penalty > 0:
-            if not any(_has_kill(accepted) for accepted in accepted_by_agent):
-                spider_penalty = (
-                    min(1.0, spider_dmg_for_penalty / player_hp_for_penalty)
-                    * spider_penalty_weight
+            metrics = score_house_builder(task=task, world_scan_blocks=blocks)
+            if reward_mode in ("paper", "paper_aligned", "collm_paper"):
+                build_reward = (
+                    coverage_weight * float(metrics.get("coverage_rate", 0.0))
+                    - redundancy_weight * float(metrics.get("redundancy_rate", 0.0))
                 )
-        reward = float(build_reward - spider_penalty)
-        scalar_metrics = {
-            "iou": float(metrics.get("iou", 0.0)),
-            "coverage_rate": float(metrics.get("coverage_rate", 0.0)),
-            "redundancy_rate": float(metrics.get("redundancy_rate", 0.0)),
-            "score_match": float(metrics.get("score_match", 0.0)),
-            "exact_non_air_rate": float(metrics.get("exact_non_air_rate", 0.0)),
-            "covered_blocks": float(metrics.get("covered_blocks", 0.0)),
-            "extra_blocks": float(metrics.get("extra_blocks", 0.0)),
-            "expected_non_air": float(metrics.get("expected_non_air", 0.0)),
-            "observed_non_air": float(metrics.get("observed_non_air", 0.0)),
-            "build_reward_raw": float(build_reward),
-            "spider_penalty": float(spider_penalty),
-            "reward_raw": float(reward),
-            "level_1": float(build_reward),
-            "level_2": -float(spider_penalty),
-            "level_total": float(reward),
-        }
-        _log_train_metrics(
-            scalar_metrics,
-            turn_idx=turn_idx,
-        )
-        _write_reward_detail(
-            {
-                "event": "house_build_reward",
-                "task_id": task.task_id,
-                "turn_idx": turn_idx,
-                "reward_mode": reward_mode,
-                "reward_raw": reward,
-                "build_reward_raw": build_reward,
-                "spider_penalty": spider_penalty,
-                "spider_total_dmg": spider_dmg_for_penalty,
-                "player_hp": player_hp_for_penalty,
-                "metrics": dict(metrics),
-                "scalar_metrics": scalar_metrics,
-                "accepted_commands_by_agent": accepted_by_agent,
-                "rejected_commands_by_agent": rejected_by_agent,
-                "extracted_lines_by_agent": extracted_lines_by_agent,
-                "raw_outputs_by_agent": raw_outputs if log_raw_completions else None,
-                "world_scan_blocks": blocks,
-            }
-        )
+            elif reward_mode in ("match", "exact", "legacy"):
+                build_reward = float(metrics.get("score_mean", 0.0))
+            else:
+                raise ValueError(f"Unsupported house_build reward.mode: {reward_mode}")
 
-        if debug_enabled:
-            _maybe_debug_print(
-                task=task,
-                reward=reward,
-                metrics=metrics,
-                blocks=blocks,
+            spider_penalty = 0.0
+            if spider_dmg_for_penalty > 0 and player_hp_for_penalty > 0:
+                if not any(_has_kill(accepted) for accepted in accepted_by_agent):
+                    spider_penalty = (
+                        min(1.0, spider_dmg_for_penalty / player_hp_for_penalty)
+                        * spider_penalty_weight
+                    )
+            reward = float(build_reward - spider_penalty)
+            rewards.append(reward)
+            scalar_metrics = {
+                "iou": float(metrics.get("iou", 0.0)),
+                "coverage_rate": float(metrics.get("coverage_rate", 0.0)),
+                "redundancy_rate": float(metrics.get("redundancy_rate", 0.0)),
+                "score_match": float(metrics.get("score_match", 0.0)),
+                "exact_non_air_rate": float(metrics.get("exact_non_air_rate", 0.0)),
+                "covered_blocks": float(metrics.get("covered_blocks", 0.0)),
+                "extra_blocks": float(metrics.get("extra_blocks", 0.0)),
+                "expected_non_air": float(metrics.get("expected_non_air", 0.0)),
+                "observed_non_air": float(metrics.get("observed_non_air", 0.0)),
+                "build_reward_raw": float(build_reward),
+                "spider_penalty": float(spider_penalty),
+                "reward_raw": float(reward),
+                "level_1": float(build_reward),
+                "level_2": -float(spider_penalty),
+                "level_total": float(reward),
+            }
+            _log_train_metrics(
+                scalar_metrics,
                 turn_idx=turn_idx,
-                raw_outputs=raw_outputs,
             )
-        return [reward]
+            _write_reward_detail(
+                {
+                    "event": "house_build_reward",
+                    "task_id": task.task_id,
+                    "turn_idx": turn_idx,
+                    "generation_idx": generation_idx,
+                    "reward_mode": reward_mode,
+                    "reward_raw": reward,
+                    "build_reward_raw": build_reward,
+                    "spider_penalty": spider_penalty,
+                    "spider_total_dmg": spider_dmg_for_penalty,
+                    "player_hp": player_hp_for_penalty,
+                    "metrics": dict(metrics),
+                    "scalar_metrics": scalar_metrics,
+                    "accepted_commands_by_agent": accepted_by_agent,
+                    "rejected_commands_by_agent": rejected_by_agent,
+                    "extracted_lines_by_agent": extracted_lines_by_agent,
+                    "raw_outputs_by_agent": raw_outputs if log_raw_completions else None,
+                    "world_scan_blocks": blocks,
+                }
+            )
+
+            if debug_enabled:
+                _maybe_debug_print(
+                    task=task,
+                    reward=reward,
+                    metrics=metrics,
+                    blocks=blocks,
+                    turn_idx=turn_idx,
+                    raw_outputs=raw_outputs,
+                )
+        return rewards
 
     return reward_fn

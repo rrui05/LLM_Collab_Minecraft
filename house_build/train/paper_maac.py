@@ -4,12 +4,27 @@ import json
 import os
 import time
 from collections import defaultdict
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
 
+from comlrl.trainers.actor_critic import MAACConfig as BaseMAACConfig  # type: ignore
 from comlrl.trainers.actor_critic import MAACTrainer as BaseMAACTrainer  # type: ignore
 from comlrl.trainers.actor_critic.iac import RolloutSample  # type: ignore
+from comlrl.utils.reward_utils import call_reward_function, normalize_reward_lengths  # type: ignore
+
+
+class PaperAlignedMAACConfig(BaseMAACConfig):
+    """MAACConfig variant that permits paper-style multi-turn grouped rollouts."""
+
+    def __post_init__(self) -> None:
+        original_num_generations = self.num_generations
+        if self.num_turns > 1 and self.num_generations != 1:
+            self.num_generations = 1
+            super().__post_init__()
+            self.num_generations = original_num_generations
+            return
+        super().__post_init__()
 
 
 class PaperAlignedMAACTrainer(BaseMAACTrainer):
@@ -80,11 +95,258 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
     def _group_rollouts_by_turn(
         self, rollouts: Iterable[RolloutSample]
     ) -> List[List[RolloutSample]]:
-        groups: Dict[int, List[RolloutSample]] = defaultdict(list)
+        groups: Dict[Tuple[int, Tuple[int, ...]], List[RolloutSample]] = defaultdict(list)
         for sample in rollouts:
-            turn_idx = int((getattr(sample, "metadata", {}) or {}).get("turn_idx", 0))
-            groups[turn_idx].append(sample)
+            metadata = getattr(sample, "metadata", {}) or {}
+            turn_idx = int(metadata.get("turn_idx", 0))
+            branch_raw = metadata.get("branch")
+            if isinstance(branch_raw, (list, tuple)):
+                branch = tuple(int(x) for x in branch_raw)
+            else:
+                branch = (int(metadata.get("generation_idx", 0)),)
+            groups[(turn_idx, branch)].append(sample)
         return [groups[idx] for idx in sorted(groups)]
+
+    def _collect_rollouts_multi_turn(
+        self, item: Dict[str, Any], num_turns: int
+    ) -> List[RolloutSample]:
+        num_ret = max(1, int(getattr(self.args, "num_generations", 1)))
+        gamma = float(getattr(self.args, "discount", 0.9))
+        all_rollouts: List[RolloutSample] = []
+
+        def _mean(values: List[float]) -> float:
+            return float(sum(values) / len(values)) if values else 0.0
+
+        def _generation_rewards(rewards_matrix: List[List[float]], gen_idx: int) -> List[float]:
+            values: List[float] = []
+            for agent_rewards in rewards_matrix:
+                if gen_idx < len(agent_rewards):
+                    values.append(float(agent_rewards[gen_idx]))
+            return values
+
+        def _build_node(
+            *,
+            turn_idx: int,
+            prompts_per_agent: Optional[List[str]],
+            prompt_history_per_agent: List[List[str]],
+            response_history_per_agent: List[List[str]],
+            branch_prefix: Tuple[int, ...],
+        ) -> Dict[str, Any]:
+            if turn_idx == 0 and prompts_per_agent is None:
+                turn_prompts = [
+                    self._resolve_turn_prompt(item, agent_idx)
+                    for agent_idx in range(self.args.num_agents)
+                ]
+            else:
+                if prompts_per_agent is None:
+                    raise ValueError("prompts_per_agent is required after turn 0.")
+                turn_prompts = [
+                    self._resolve_turn_prompt(
+                        item, agent_idx, external_prompt=prompts_per_agent[agent_idx]
+                    )
+                    for agent_idx in range(self.args.num_agents)
+                ]
+
+            current_prompt_history = [
+                list(prompt_history_per_agent[agent_idx]) + [turn_prompts[agent_idx]]
+                for agent_idx in range(self.args.num_agents)
+            ]
+
+            def _generate_agent_turn(agent_idx: int) -> Dict[str, Any]:
+                agent_model = self.agents[agent_idx]
+                prompt = turn_prompts[agent_idx]
+                gen = self._generate(agent_model, prompt, agent_idx)
+                return {
+                    "agent_idx": agent_idx,
+                    "prompt": prompt,
+                    "prompt_len": gen["prompt_len"],
+                    "sequences": gen["sequences"],
+                    "attention_mask": gen["attention_mask"],
+                    "response_lens": gen["response_lens"],
+                    "completion_texts": gen["completions"],
+                }
+
+            rollout_data = self._run_agent_tasks(_generate_agent_turn)
+            rollout_data = sorted(rollout_data, key=lambda entry: int(entry["agent_idx"]))
+            completions_per_agent = [
+                entry["completion_texts"] for entry in rollout_data
+            ]
+
+            batch_item = dict(item)
+            batch_item["_house_build_turn"] = turn_idx + 1
+            rewards = call_reward_function(
+                self.reward_func,
+                turn_prompts,
+                completions_per_agent,
+                num_agents=self.args.num_agents,
+                batch_items=[batch_item],
+                signature=self._reward_signature,
+            )
+            rewards = normalize_reward_lengths(
+                [float(self.reward_processor(r)) for r in rewards],
+                num_agents=self.args.num_agents,
+                num_generations=num_ret,
+                algorithm="MAAC",
+            )
+            rewards_matrix = self._expand_rewards(rewards, num_ret=num_ret)
+
+            samples_by_generation: List[List[RolloutSample]] = []
+            for gen_idx in range(num_ret):
+                joint_action = [
+                    completions_per_agent[agent_idx][gen_idx]
+                    for agent_idx in range(self.args.num_agents)
+                ]
+                critic_input = self._build_critic_input(turn_prompts, joint_action)
+                with torch.no_grad():
+                    critic_pack = self._critic_value_from_text(critic_input)
+                joint_ids = critic_pack["input_ids"]
+                joint_mask = critic_pack["attention_mask"]
+                joint_len = int(critic_pack["prompt_len"])
+                joint_value = critic_pack["value"]
+
+                generation_samples: List[RolloutSample] = []
+                branch = branch_prefix + (gen_idx,)
+                for data in rollout_data:
+                    agent_idx = int(data["agent_idx"])
+                    seq = data["sequences"][gen_idx]
+                    attn = data["attention_mask"][gen_idx]
+                    resp_len = data["response_lens"][gen_idx]
+                    reward_val = float(rewards_matrix[agent_idx][gen_idx])
+                    reward_cpu = torch.tensor([reward_val], dtype=torch.float32)
+
+                    logprob, _ = self._policy_eval(
+                        self.agents[agent_idx],
+                        seq.unsqueeze(0),
+                        attn.unsqueeze(0),
+                        data["prompt_len"],
+                        resp_len,
+                        output_values=False,
+                    )
+
+                    completion_text = data["completion_texts"][gen_idx]
+                    sample = RolloutSample(
+                        agent_idx=agent_idx,
+                        prompt=data["prompt"],
+                        completion=completion_text,
+                        full_input_ids=seq.detach().cpu(),
+                        attention_mask=attn.detach().cpu(),
+                        prompt_len=data["prompt_len"],
+                        response_len=resp_len,
+                        old_logprob=logprob.detach().cpu(),
+                        old_value=joint_value.detach().cpu(),
+                        reward=reward_cpu,
+                        returns=reward_cpu.clone(),
+                        advantage=torch.zeros_like(reward_cpu),
+                        normalized_advantage=None,
+                        metadata={
+                            "joint_input_ids": joint_ids.detach().cpu(),
+                            "joint_attention_mask": joint_mask.detach().cpu(),
+                            "joint_prompt_len": joint_len,
+                            "turn_idx": turn_idx,
+                            "generation_idx": gen_idx,
+                            "branch": branch,
+                            "adv_target": reward_cpu,
+                            "value_target": reward_cpu,
+                        },
+                    )
+                    generation_samples.append(sample)
+                    all_rollouts.append(sample)
+                samples_by_generation.append(generation_samples)
+
+            children: List[Optional[Dict[str, Any]]] = [None] * num_ret
+            term_threshold = getattr(self.args, "early_termination_threshold", None)
+            terminate_here = False
+            if term_threshold is not None:
+                generation_means = [
+                    _mean(_generation_rewards(rewards_matrix, gen_idx))
+                    for gen_idx in range(num_ret)
+                ]
+                terminate_here = _mean(generation_means) > float(term_threshold)
+
+            if turn_idx < num_turns - 1 and not terminate_here:
+                if self.external_transition is None:
+                    raise ValueError("external_transition is required for multi-turn.")
+                for gen_idx in range(num_ret):
+                    parent_joint = [
+                        completions_per_agent[agent_idx][gen_idx]
+                        for agent_idx in range(self.args.num_agents)
+                    ]
+                    next_response_history = [
+                        list(response_history_per_agent[agent_idx])
+                        + [parent_joint[agent_idx]]
+                        for agent_idx in range(self.args.num_agents)
+                    ]
+                    transition_result = self.external_transition(
+                        prompt=item.get("prompt", ""),
+                        agent_completions=parent_joint,
+                        num_agents=self.args.num_agents,
+                        prompt_history_per_agent=current_prompt_history,
+                        response_history_per_agent=next_response_history,
+                    )
+                    if (
+                        not isinstance(transition_result, (list, tuple))
+                        or len(transition_result) != self.args.num_agents
+                    ):
+                        raise ValueError(
+                            "External transition must return per-agent prompts"
+                        )
+                    children[gen_idx] = _build_node(
+                        turn_idx=turn_idx + 1,
+                        prompts_per_agent=list(transition_result),
+                        prompt_history_per_agent=current_prompt_history,
+                        response_history_per_agent=next_response_history,
+                        branch_prefix=branch_prefix + (gen_idx,),
+                    )
+
+            return {
+                "turn_idx": turn_idx,
+                "samples_by_generation": samples_by_generation,
+                "children": children,
+                "returns_by_agent": None,
+            }
+
+        root = _build_node(
+            turn_idx=0,
+            prompts_per_agent=None,
+            prompt_history_per_agent=[[] for _ in range(self.args.num_agents)],
+            response_history_per_agent=[[] for _ in range(self.args.num_agents)],
+            branch_prefix=(),
+        )
+
+        def _compute_returns(node: Dict[str, Any]) -> List[List[float]]:
+            children = node["children"]
+            child_returns: List[Optional[List[List[float]]]] = []
+            for child in children:
+                child_returns.append(_compute_returns(child) if child is not None else None)
+
+            returns_by_agent: List[List[float]] = [
+                [0.0 for _ in range(num_ret)] for _ in range(self.args.num_agents)
+            ]
+            samples_by_generation = node["samples_by_generation"]
+            for gen_idx, generation_samples in enumerate(samples_by_generation):
+                child = child_returns[gen_idx] if gen_idx < len(child_returns) else None
+                for sample in generation_samples:
+                    agent_idx = int(sample.agent_idx)
+                    immediate = float(sample.reward.view(-1)[0].item())
+                    if child is not None and agent_idx < len(child):
+                        target = immediate + gamma * _mean([float(v) for v in child[agent_idx]])
+                    else:
+                        target = immediate
+                    returns_by_agent[agent_idx][gen_idx] = target
+                    target_tensor = torch.tensor([target], dtype=torch.float32)
+                    sample.returns = target_tensor
+                    sample.metadata["adv_target"] = target_tensor.cpu()
+                    sample.metadata["value_target"] = target_tensor.cpu()
+            node["returns_by_agent"] = returns_by_agent
+            return returns_by_agent
+
+        _compute_returns(root)
+
+        if self.metrics_callback is not None:
+            extra = self.metrics_callback(all_rollouts)
+            if isinstance(extra, dict):
+                self._log_metrics(extra)
+        return all_rollouts
 
     def _run_batch(self, batch: Any, epoch_metrics: Dict[str, List[float]]) -> None:
         for item in batch:
