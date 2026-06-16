@@ -99,7 +99,7 @@ maac:
   maac_detail_log_name: maac_paper_aligned_details.jsonl
   max_new_tokens: 512
   discount: 0.9
-  early_termination_threshold: 0.0
+  early_termination_threshold: null
   eval_interval: 10
   eval_num_samples: 2
   eval_batch_size: 1

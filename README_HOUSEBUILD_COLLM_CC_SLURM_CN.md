@@ -36,7 +36,7 @@ max_new_tokens:      512
 eval_num_samples:    2
 ```
 
-注意：HouseBuild CoLLM-CC 入口使用 `PaperAlignedMAACTrainer`，已覆盖上游 `comlrl` 多轮 MAAC 对 `num_generations == 1` 的旧限制。当前配置使用 `num_turns=4`、`num_generations=2`，按 aligned joint generations 分支收集 multi-turn rollouts，并使用 shared centralized critic 更新。
+注意：HouseBuild CoLLM-CC 入口使用 `PaperAlignedMAACTrainer`，已覆盖上游 `comlrl` 多轮 MAAC 对 `num_generations == 1` 的旧限制。当前配置使用 `num_turns=4`、`num_generations=2`，按两条线性 joint trajectories 收集 multi-turn rollouts，并使用 shared centralized critic 更新。
 
 ## 3. 创建环境
 

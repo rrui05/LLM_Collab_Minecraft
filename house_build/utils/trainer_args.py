@@ -244,7 +244,7 @@ def get_maac_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> MAACC
         ),
         "critic_type": str(tr.get("critic_type", "v")),
         "early_termination_threshold": _as_opt_float(
-            tr.get("early_termination_threshold", 0.0), 0.0
+            tr.get("early_termination_threshold", None), None
         ),
         "eval_interval": _as_int(tr.get("eval_interval", 10), 10),
         "eval_num_samples": _as_int(tr.get("eval_num_samples", 2), 2),
