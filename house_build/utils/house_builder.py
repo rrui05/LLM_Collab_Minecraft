@@ -470,6 +470,7 @@ def score_house_builder(*, task: TaskSpec, world_scan_blocks: List[Dict[str, Any
     total = 0
     expected_non_air = 0
     intersection = 0
+    exact_non_air_correct = 0
     for pos, expected in expected_map.items():
         total += 1
         obs = observed.get(pos, "air")
@@ -479,10 +480,19 @@ def score_house_builder(*, task: TaskSpec, world_scan_blocks: List[Dict[str, Any
             expected_non_air += 1
             if not _is_air(obs):
                 intersection += 1
+            if obs == expected:
+                exact_non_air_correct += 1
 
     observed_non_air = sum(1 for v in observed.values() if not _is_air(v))
+    extra_blocks = max(0, observed_non_air - intersection)
     union = expected_non_air + observed_non_air - intersection
     iou = (intersection / union) if union > 0 else 0.0
+    coverage_rate = (intersection / expected_non_air) if expected_non_air > 0 else 0.0
+    exact_non_air_rate = (
+        exact_non_air_correct / expected_non_air if expected_non_air > 0 else 0.0
+    )
+    redundancy_rate = (extra_blocks / expected_non_air) if expected_non_air > 0 else 0.0
+    paper_build_reward = 2.0 * coverage_rate - 1.5 * redundancy_rate
 
     score_match = (correct / total) if total else 0.0
     return {
@@ -491,6 +501,15 @@ def score_house_builder(*, task: TaskSpec, world_scan_blocks: List[Dict[str, Any
         "score_match": score_match,
         "score_mean": score_match,
         "iou": iou,
+        "expected_non_air": expected_non_air,
+        "observed_non_air": observed_non_air,
+        "covered_blocks": intersection,
+        "extra_blocks": extra_blocks,
+        "coverage_rate": coverage_rate,
+        "redundancy_rate": redundancy_rate,
+        "exact_non_air_correct": exact_non_air_correct,
+        "exact_non_air_rate": exact_non_air_rate,
+        "paper_build_reward": paper_build_reward,
     }
 
 

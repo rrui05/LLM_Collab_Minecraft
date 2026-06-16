@@ -65,6 +65,8 @@ output:
   verbose: false
   save_final_model: false
   save_path: output_maac_house_build
+  log_detailed_metrics: true
+  log_raw_completions: true
 
 external:
   mode: score_feedback
@@ -89,6 +91,12 @@ maac:
   value_loss_coef: 0.6
   rollout_buffer_size: 1
   train_batch_size: 1
+  use_importance_ratio: true
+  joint_critic_update: true
+  policy_ratio_clip: 0.2
+  advantage_clip: 0.05
+  detailed_logging: true
+  maac_detail_log_name: maac_paper_aligned_details.jsonl
   max_new_tokens: 512
   discount: 0.9
   early_termination_threshold: 0.0
@@ -97,10 +105,16 @@ maac:
   eval_batch_size: 1
   logging_steps: 40
 
+reward:
+  mode: paper
+  coverage_weight: 2.0
+  redundancy_weight: 1.5
+  spider_penalty_weight: 0.2
+
 reward_processor:
   enabled: true
   scale_factor: 1.0
-  shift: -1.0
+  shift: 0.0
 
 wandb:
   project: house_build

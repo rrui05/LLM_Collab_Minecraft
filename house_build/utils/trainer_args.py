@@ -259,7 +259,15 @@ def get_maac_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> MAACC
     params.discard("kwargs")
     filtered = {k: v for k, v in candidate.items() if k in params}
 
-    return MAACConfig(**filtered)
+    cfg_obj = MAACConfig(**filtered)
+    setattr(cfg_obj, "use_importance_ratio", _as_bool(tr.get("use_importance_ratio", True), True))
+    setattr(cfg_obj, "joint_critic_update", _as_bool(tr.get("joint_critic_update", True), True))
+    setattr(cfg_obj, "policy_ratio_clip", _as_opt_float(tr.get("policy_ratio_clip", 0.2), 0.2))
+    setattr(cfg_obj, "advantage_clip", _as_opt_float(tr.get("advantage_clip", 0.05), 0.05))
+    setattr(cfg_obj, "detailed_logging", _as_bool(tr.get("detailed_logging", True), True))
+    detail_name = tr.get("maac_detail_log_name", "maac_paper_aligned_details.jsonl")
+    setattr(cfg_obj, "maac_detail_log_name", str(detail_name or "maac_paper_aligned_details.jsonl"))
+    return cfg_obj
 
 
 def get_iac_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> IACConfig:

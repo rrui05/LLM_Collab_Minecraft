@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import time
 from typing import Any, Callable, Dict, List, Mapping
 
 from LLM_Collab_Minecraft.house_build.utils.agent_utils import (
@@ -39,6 +42,27 @@ def _as_int(x: Any, default: int) -> int:
         return int(x)
     except Exception:
         return int(default)
+
+
+def _as_float(x: Any, default: float) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _as_bool(x: Any, default: bool) -> bool:
+    if x is None:
+        return bool(default)
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, str):
+        s = x.strip().lower()
+        if s in ("true", "1", "yes", "y", "t"):
+            return True
+        if s in ("false", "0", "no", "n", "f"):
+            return False
+    return bool(x)
 
 
 def _task_from_batch_item(item: Mapping[str, Any]) -> TaskSpec:
@@ -131,6 +155,23 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
     if not isinstance(output_cfg, dict):
         output_cfg = {}
     output_verbose = bool(output_cfg.get("verbose", False))
+    output_base_dir = str(output_cfg.get("base_dir") or os.getcwd())
+    detailed_log_enabled = _as_bool(output_cfg.get("log_detailed_metrics", True), True)
+    log_raw_completions = _as_bool(output_cfg.get("log_raw_completions", True), True)
+    reward_detail_path = str(
+        output_cfg.get("reward_detail_path")
+        or os.path.join(output_base_dir, "house_build_reward_details.jsonl")
+    )
+
+    reward_cfg = cfg.get("reward") or {}
+    if not isinstance(reward_cfg, dict):
+        reward_cfg = {}
+    reward_mode = str(reward_cfg.get("mode") or "paper").strip().lower()
+    coverage_weight = _as_float(reward_cfg.get("coverage_weight", 2.0), 2.0)
+    redundancy_weight = _as_float(reward_cfg.get("redundancy_weight", 1.5), 1.5)
+    spider_penalty_weight = _as_float(
+        reward_cfg.get("spider_penalty_weight", 0.2), 0.2
+    )
 
     debug_enabled = output_verbose
     debug_empty_char = "."
@@ -209,6 +250,17 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
     player_hp_for_penalty = float(rpg_state.get("player_hp", 0) or 0)
     spider_dmg_for_penalty = float(rpg_state.get("spider_total_dmg", 0) or 0)
 
+    def _write_reward_detail(payload: Mapping[str, Any]) -> None:
+        if not detailed_log_enabled:
+            return
+        try:
+            os.makedirs(os.path.dirname(reward_detail_path) or ".", exist_ok=True)
+            record = {"time": time.time(), **dict(payload)}
+            with open(reward_detail_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            return
+
     def _has_kill(cmds: List[str]) -> bool:
         for cmd in cmds:
             stripped = (cmd or "").strip()
@@ -234,6 +286,8 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
 
         resource_limits = compute_resource_limits(task, num_agents=num_agents) if limited_resource else None
         accepted_by_agent: List[List[str]] = []
+        rejected_by_agent: List[List[str]] = []
+        extracted_lines_by_agent: List[List[str]] = []
         raw_outputs: List[str] = []
 
         for agent_idx, completions in enumerate(agent_completions):
@@ -246,7 +300,8 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
             completion = completions[0] if completions else ""
             raw_outputs.append(completion)
             lines = extract_command_lines(completion)
-            accepted, _rejected = validate_and_normalize_mc_commands(
+            extracted_lines_by_agent.append(lines)
+            accepted, rejected = validate_and_normalize_mc_commands(
                 lines=lines,
                 allowed_blocks=allowed_blocks,
                 world_bbox_from=task.local_bbox_from,
@@ -255,6 +310,7 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
                 resource_limits=resource_limits,
             )
             accepted_by_agent.append(accepted)
+            rejected_by_agent.append(rejected)
 
         merged = [cmd for accepted in accepted_by_agent for cmd in accepted]
         blocks = simulate_commands_to_scan_blocks(
@@ -263,20 +319,64 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
             world_bbox_to=task.local_bbox_to,
         )
         metrics = score_house_builder(task=task, world_scan_blocks=blocks)
-        reward = float(metrics.get("score_mean", 0.0))
+        if reward_mode in ("paper", "paper_aligned", "collm_paper"):
+            build_reward = (
+                coverage_weight * float(metrics.get("coverage_rate", 0.0))
+                - redundancy_weight * float(metrics.get("redundancy_rate", 0.0))
+            )
+        elif reward_mode in ("match", "exact", "legacy"):
+            build_reward = float(metrics.get("score_mean", 0.0))
+        else:
+            raise ValueError(f"Unsupported house_build reward.mode: {reward_mode}")
+
         spider_penalty = 0.0
         if spider_dmg_for_penalty > 0 and player_hp_for_penalty > 0:
             if not any(_has_kill(accepted) for accepted in accepted_by_agent):
-                spider_penalty = min(1.0, spider_dmg_for_penalty / player_hp_for_penalty) * 0.1
-        reward -= spider_penalty
+                spider_penalty = (
+                    min(1.0, spider_dmg_for_penalty / player_hp_for_penalty)
+                    * spider_penalty_weight
+                )
+        reward = float(build_reward - spider_penalty)
+        scalar_metrics = {
+            "iou": float(metrics.get("iou", 0.0)),
+            "coverage_rate": float(metrics.get("coverage_rate", 0.0)),
+            "redundancy_rate": float(metrics.get("redundancy_rate", 0.0)),
+            "score_match": float(metrics.get("score_match", 0.0)),
+            "exact_non_air_rate": float(metrics.get("exact_non_air_rate", 0.0)),
+            "covered_blocks": float(metrics.get("covered_blocks", 0.0)),
+            "extra_blocks": float(metrics.get("extra_blocks", 0.0)),
+            "expected_non_air": float(metrics.get("expected_non_air", 0.0)),
+            "observed_non_air": float(metrics.get("observed_non_air", 0.0)),
+            "build_reward_raw": float(build_reward),
+            "spider_penalty": float(spider_penalty),
+            "reward_raw": float(reward),
+            "level_1": float(build_reward),
+            "level_2": -float(spider_penalty),
+            "level_total": float(reward),
+        }
         _log_train_metrics(
-            {
-                "iou": float(metrics.get("iou", 0.0)),
-                "level_1": float(metrics.get("score_match", 0.0)),
-                "level_2": -float(spider_penalty),
-                "level_total": reward,
-            },
+            scalar_metrics,
             turn_idx=turn_idx,
+        )
+        _write_reward_detail(
+            {
+                "event": "house_build_reward",
+                "task_id": task.task_id,
+                "turn_idx": turn_idx,
+                "reward_mode": reward_mode,
+                "reward_raw": reward,
+                "build_reward_raw": build_reward,
+                "spider_penalty": spider_penalty,
+                "spider_total_dmg": spider_dmg_for_penalty,
+                "player_hp": player_hp_for_penalty,
+                "metrics": dict(metrics),
+                "scalar_metrics": scalar_metrics,
+                "accepted_commands_by_agent": accepted_by_agent,
+                "rejected_commands_by_agent": rejected_by_agent,
+                "extracted_lines_by_agent": extracted_lines_by_agent,
+                "raw_outputs_by_agent": raw_outputs if log_raw_completions else None,
+                "world_scan_blocks": blocks,
+            }
         )
 
         if debug_enabled:

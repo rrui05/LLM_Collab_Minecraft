@@ -25,7 +25,9 @@ from datasets import Dataset  # type: ignore
 from transformers import AutoTokenizer  # type: ignore
 import torch  # type: ignore
 
-from comlrl.trainers.actor_critic import MAACTrainer  # type: ignore
+from LLM_Collab_Minecraft.house_build.train.paper_maac import (  # type: ignore
+    PaperAlignedMAACTrainer as MAACTrainer,
+)
 from comlrl.utils.reward_processor import RewardProcessors  # type: ignore
 
 from LLM_Collab_Minecraft.house_build.external import (
