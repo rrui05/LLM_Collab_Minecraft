@@ -1,0 +1,1 @@
+sbatch --job-name hb-collm-cc-3gpu --account gzmcagent --partition normal --nodes 1 --gpus-per-node 3 --ntasks-per-node 1 --cpus-per-task 40 --time 48:00:00 --output slurm-%x-%j.out --error slurm-%x-%j.err --export=ALL /project/gzmcagent/LLM_Collab_Minecraft/slurm/house_build_collm_cc_3gpu.sbatch

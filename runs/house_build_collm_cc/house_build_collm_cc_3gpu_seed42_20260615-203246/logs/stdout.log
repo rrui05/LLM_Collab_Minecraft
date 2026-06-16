@@ -1,0 +1,128 @@
+===== HouseBuild CoLLM-CC 3-GPU Slurm Run =====
+Mon Jun 15 08:32:46 PM HKT 2026
+repo_dir=/project/gzmcagent/LLM_Collab_Minecraft
+run_dir=/project/gzmcagent/LLM_Collab_Minecraft/runs/house_build_collm_cc/house_build_collm_cc_3gpu_seed42_20260615-203246
+slurm_job_id=454038
+slurm_node_list=dgx-09
+sbatch_launch_args=--job-name hb-collm-cc-3gpu --account gzmcagent --partition normal --nodes 1 --gpus-per-node 3 --ntasks-per-node 1 --cpus-per-task 40 --time 48:00:00 --output slurm-%x-%j.out --error slurm-%x-%j.err --export=ALL
+dry_run=false
+conda already found; skipping MODULES='Anaconda3'
+===== Git =====
+d60af4d1b22b7d1981f90d4679ccfd01989bf182
+?? slurm/.house_build_magrpo_2gpu.sbatch.swp
+?? wandb/
+origin	https://github.com/rrui05/LLM_Collab_Minecraft (fetch)
+origin	https://github.com/rrui05/LLM_Collab_Minecraft (push)
+===== System =====
+dgx-09
+Linux dgx-09 5.15.0-1082-nvidia #83-Ubuntu SMP Wed Jun 25 14:42:03 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+Mon Jun 15 20:32:46 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.158.01             Driver Version: 570.158.01     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA H800                    On  |   00000000:52:00.0 Off |                    0 |
+| N/A   24C    P0             68W /  700W |       0MiB /  81559MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA H800                    On  |   00000000:61:00.0 Off |                    0 |
+| N/A   23C    P0             67W /  700W |       0MiB /  81559MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA H800                    On  |   00000000:C3:00.0 Off |                    0 |
+| N/A   24C    P0             68W /  700W |       0MiB /  81559MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+# conda environments:
+#
+base                     /cm/shared/apps/Anaconda3/2023.09-0
+agiclass                 /home/szhangfa/.conda/envs/agiclass
+claude                *  /home/szhangfa/.conda/envs/claude
+llama                    /home/szhangfa/.conda/envs/llama
+llm-collab-mc            /home/szhangfa/.conda/envs/llm-collab-mc
+local                    /home/szhangfa/.conda/envs/local
+myenv                    /home/szhangfa/.conda/envs/myenv
+
+/home/szhangfa/.conda/envs/llm-collab-mc/bin/python
+Python 3.11.15
+python_executable: /home/szhangfa/.conda/envs/llm-collab-mc/bin/python
+torch: 2.8.0+cu128
+cuda_available: True
+cuda_count: 3
+cuda:0: NVIDIA H800
+cuda:1: NVIDIA H800
+cuda:2: NVIDIA H800
+comlrl: 1.3.7
+transformers: 4.55.4
+===== CoLLM-CC Preflight =====
+HouseBuild CoLLM-CC preflight OK
+repo_root: /project/gzmcagent/LLM_Collab_Minecraft
+config: /project/gzmcagent/LLM_Collab_Minecraft/house_build/configs/house_build_maac_config.yaml
+comlrl: 1.3.7
+transformers: 4.55.4
+torch: 2.8.0+cu128
+cuda_available: True
+cuda_count: 3
+tasks/train/eval: 10/8/2
+algorithm: CoLLM-CC via CoMLRL MAACTrainer centralized critic
+agent_model: Qwen/Qwen3-4B-Instruct-2507
+critic_model: Qwen/Qwen3-4B-Instruct-2507
+maac.parallel_training: mp
+maac.agent_devices: ['cuda:0', 'cuda:1']
+maac.critic_devices: ['cuda:2']
+maac.num_turns: 4
+maac.num_generations: 1
+maac.num_train_epochs: 150
+maac.agent_learning_rate: 5e-06
+maac.critic_learning_rate: 5e-06
+first_prompt_chars: [2559, 2559]
+empty_raw_reward: 0.314966
+===== Training Command =====
+conda run --no-capture-output -n llm-collab-mc python house_build/train/train_maac.py --config house_build/configs/house_build_maac_config.yaml --override \
+  seed=42 \
+  agent_model.name=\'Qwen/Qwen3-4B-Instruct-2507\' \
+  agent_model.dtype=\'bf16\' \
+  critic_model.name=\'Qwen/Qwen3-4B-Instruct-2507\' \
+  critic_model.dtype=\'bf16\' \
+  dataset.train_split=\'\[:8\]\' \
+  dataset.eval_split=\'\[8:\]\' \
+  output.base_dir=\'/project/gzmcagent/LLM_Collab_Minecraft/runs/house_build_collm_cc/house_build_collm_cc_3gpu_seed42_20260615-203246/output\' \
+  output.save_final_model=true \
+  output.save_path=\'/project/gzmcagent/LLM_Collab_Minecraft/runs/house_build_collm_cc/house_build_collm_cc_3gpu_seed42_20260615-203246/final_model\' \
+  external.mode=\'score_feedback\' \
+  external.original_prompt=true \
+  external.previous_response=true \
+  maac.parallel_training=\'mp\' \
+  maac.agent_devices=\[\'cuda:0\'\,\'cuda:1\'\] \
+  maac.critic_devices=\[\'cuda:2\'\] \
+  maac.num_agents=2 \
+  maac.num_turns=4 \
+  maac.num_generations=1 \
+  maac.num_train_epochs=150 \
+  maac.agent_learning_rate=5e-6 \
+  maac.critic_learning_rate=5e-6 \
+  maac.value_loss_coef=0.6 \
+  maac.max_new_tokens=512 \
+  maac.rollout_buffer_size=1 \
+  maac.train_batch_size=1 \
+  maac.eval_interval=10 \
+  maac.eval_num_samples=2 \
+  maac.eval_batch_size=1 \
+  wandb.enabled=true \
+  wandb.project=\'house_build\' \
+  wandb.entity=\'zzr2210505-sun-yat-sen-university\' \
+  wandb.run_name=\'house_build_collm_cc_3gpu_seed42_20260615-203246\' \
+  wandb.dir=\'/project/gzmcagent/LLM_Collab_Minecraft/runs/house_build_collm_cc/house_build_collm_cc_3gpu_seed42_20260615-203246/wandb\' \
+  wandb.tags=\[\'collm-cc\'\,\'maac\'\,\'house_build\'\,\'slurm\'\,\'3gpu\'\,\'h800\'\,\'qwen3-4b\'\] \
+===== Start Training =====
