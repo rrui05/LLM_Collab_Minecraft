@@ -217,7 +217,7 @@ def get_maac_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> MAACC
     if not isinstance(ext, dict):
         ext = {}
 
-    adv_norm = tr.get("advantage_normalization", tr.get("normalize_advantage", True))
+    adv_norm = tr.get("advantage_normalization", tr.get("normalize_advantage", False))
 
     candidate = {
         "num_turns": _as_int(tr.get("num_turns", 4), 4),
@@ -228,7 +228,7 @@ def get_maac_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> MAACC
         ),
         "rollout_buffer_size": _as_int(tr.get("rollout_buffer_size", 1), 1),
         "value_loss_coef": _as_float(tr.get("value_loss_coef", 0.6), 0.6),
-        "advantage_normalization": _as_bool(adv_norm, True),
+        "advantage_normalization": _as_bool(adv_norm, False),
         "max_new_tokens": _as_int(tr.get("max_new_tokens", 512), 512),
         "temperature": _as_float(sampling_cfg.get("temperature"), 0.6),
         "top_p": _as_float(sampling_cfg.get("top_p"), 0.6),
@@ -264,7 +264,7 @@ def get_maac_args(cfg: Dict[str, Any], *, sampling_cfg: Dict[str, Any]) -> MAACC
     cfg_obj = MAACConfig(**filtered)
     setattr(cfg_obj, "use_importance_ratio", _as_bool(tr.get("use_importance_ratio", True), True))
     setattr(cfg_obj, "joint_critic_update", _as_bool(tr.get("joint_critic_update", True), True))
-    setattr(cfg_obj, "policy_ratio_clip", _as_opt_float(tr.get("policy_ratio_clip", 0.2), 0.2))
+    setattr(cfg_obj, "policy_ratio_clip", _as_opt_float(tr.get("policy_ratio_clip", None), None))
     setattr(cfg_obj, "advantage_clip", _as_opt_float(tr.get("advantage_clip", 0.05), 0.05))
     setattr(cfg_obj, "detailed_logging", _as_bool(tr.get("detailed_logging", True), True))
     detail_name = tr.get("maac_detail_log_name", "maac_paper_aligned_details.jsonl")

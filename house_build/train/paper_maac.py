@@ -19,6 +19,9 @@ class PaperAlignedMAACConfig(BaseMAACConfig):
     """MAACConfig variant that permits paper-style multi-turn grouped rollouts."""
 
     def __post_init__(self) -> None:
+        # CoLLM-CC Eq. 4 uses the TD error directly; the paper only clips
+        # advantages and does not normalize them across a minibatch.
+        self.advantage_normalization = False
         original_num_generations = self.num_generations
         if self.num_turns > 1 and self.num_generations != 1:
             self.num_generations = 1
@@ -92,6 +95,57 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
 
     def _critic_device_for(self) -> torch.device:
         return getattr(self, "critic_device", getattr(self, "device", torch.device("cpu")))
+
+    def _value_on_prompt_only(
+        self,
+        model: Any,
+        sequences: torch.Tensor,
+        attention_mask: torch.Tensor,
+        prompt_len: int,
+    ) -> torch.Tensor:
+        """Evaluate V(h) without materializing unused LM logits.
+
+        CoLLM-CC only needs the critic value head for Eq. 4/5. The upstream
+        helper calls the CausalLM wrapper and therefore builds full vocabulary
+        logits, which is the dominant GPU-2 allocation for long HouseBuild
+        prompts.
+        """
+        prompt_ids = sequences[:, :prompt_len]
+        prompt_mask = (
+            attention_mask[:, :prompt_len] if attention_mask is not None else None
+        )
+
+        value_head = getattr(model, "value_head", None)
+        causal_lm = getattr(model, "model", None)
+        backbone = None
+        if causal_lm is not None:
+            backbone = getattr(causal_lm, "model", None)
+            if backbone is None:
+                backbone = getattr(causal_lm, "transformer", None)
+
+        if value_head is None or backbone is None:
+            return super()._value_on_prompt_only(
+                model, sequences, attention_mask, prompt_len
+            )
+
+        outputs = backbone(
+            input_ids=prompt_ids,
+            attention_mask=prompt_mask,
+            use_cache=False,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        hidden_states = getattr(outputs, "last_hidden_state", None)
+        if hidden_states is None:
+            all_hidden = getattr(outputs, "hidden_states", None)
+            if not all_hidden:
+                return super()._value_on_prompt_only(
+                    model, sequences, attention_mask, prompt_len
+                )
+            hidden_states = all_hidden[-1]
+
+        values = value_head(hidden_states).squeeze(-1)
+        return values[:, prompt_len - 1]
 
     def _generate_one(self, agent_model: Any, prompt: str, agent_idx: int) -> Dict[str, Any]:
         agent_device = self._agent_device(agent_idx)
@@ -317,6 +371,22 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
             for agent_idx in range(self.args.num_agents):
                 traj = per_agent_samples[agent_idx]
                 for t, sample in enumerate(traj):
+                    if t < len(traj) - 1:
+                        next_sample = traj[t + 1]
+                        sample.metadata["next_joint_input_ids"] = next_sample.metadata[
+                            "joint_input_ids"
+                        ]
+                        sample.metadata["next_joint_attention_mask"] = (
+                            next_sample.metadata["joint_attention_mask"]
+                        )
+                        sample.metadata["next_joint_prompt_len"] = next_sample.metadata[
+                            "joint_prompt_len"
+                        ]
+                    else:
+                        sample.metadata["next_joint_input_ids"] = None
+                        sample.metadata["next_joint_attention_mask"] = None
+                        sample.metadata["next_joint_prompt_len"] = None
+
                     r = float(sample.reward.view(-1)[0].item())
                     if t < len(traj) - 1:
                         next_v = float(traj[t + 1].old_value.view(-1)[0].item())
@@ -394,25 +464,37 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                     sample.normalized_advantage, -clip_val, clip_val
                 )
 
+    def _clip_advantage_tensor(self, advantage: torch.Tensor) -> torch.Tensor:
+        clip = getattr(self.args, "advantage_clip", None)
+        if clip is None:
+            return advantage
+        try:
+            clip_val = float(clip)
+        except Exception:
+            return advantage
+        if clip_val <= 0:
+            return advantage
+        return torch.clamp(advantage, -clip_val, clip_val)
+
     def _joint_update(self, groups: List[List[RolloutSample]]) -> Dict[str, float]:
         flat_samples = [sample for group in groups for sample in group]
         if not flat_samples:
             return {}
 
         metrics = self._summarize_rollout_metrics(flat_samples)
-        self._prepare_advantages(flat_samples)
-        self._clip_advantages(flat_samples)
 
         actor_losses_by_agent: Dict[int, List[torch.Tensor]] = defaultdict(list)
         critic_losses: List[torch.Tensor] = []
         ratio_values: List[float] = []
         unclipped_ratio_values: List[float] = []
         advantage_values: List[float] = []
+        td_values: List[float] = []
         td_abs_values: List[float] = []
         current_value_values: List[float] = []
         target_values: List[float] = []
 
         critic_device = self._critic_device_for()
+        gamma = float(getattr(self.args, "discount", 0.9))
         use_ratio = bool(getattr(self.args, "use_importance_ratio", True))
         ratio_clip = getattr(self.args, "policy_ratio_clip", None)
         if ratio_clip is not None:
@@ -433,21 +515,44 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                 self.critics[0], joint_ids, joint_mask, joint_len
             )
 
-            group_targets: List[torch.Tensor] = []
-            for sample in group:
-                value_target = sample.metadata.get("value_target")
-                if value_target is None:
-                    raise RuntimeError("value_target missing for critic update.")
-                group_targets.append(value_target.to(value.device, dtype=value.dtype))
-            returns = torch.stack(group_targets).mean(dim=0)
-            value_error = (returns - value) ** 2
+            reward_vals = [
+                sample.reward.to(value.device, dtype=value.dtype).view(-1)[0]
+                for sample in group
+            ]
+            reward = torch.stack(reward_vals).mean().view_as(value)
+
+            next_ids = first.metadata.get("next_joint_input_ids")
+            next_mask = first.metadata.get("next_joint_attention_mask")
+            next_len = first.metadata.get("next_joint_prompt_len")
+            if next_ids is not None and next_mask is not None and next_len is not None:
+                with torch.no_grad():
+                    next_value = self._value_on_prompt_only(
+                        self.critics[0],
+                        next_ids.to(critic_device),
+                        next_mask.to(critic_device),
+                        int(next_len),
+                    )
+                value_target = reward + gamma * next_value
+            else:
+                next_value = None
+                value_target = reward
+
+            td_error = value_target - value
+            policy_advantage_tensor = self._clip_advantage_tensor(td_error.detach())
+            value_error = td_error**2
             critic_losses.append(value_error)
 
             current_value = float(value.detach().view(-1)[0].float().cpu().item())
-            target_value = float(returns.detach().view(-1)[0].float().cpu().item())
+            target_value = float(
+                value_target.detach().view(-1)[0].float().cpu().item()
+            )
+            td_error_float = float(
+                td_error.detach().view(-1)[0].float().cpu().item()
+            )
             current_value_values.append(current_value)
             target_values.append(target_value)
-            td_abs_values.append(abs(target_value - current_value))
+            td_values.append(td_error_float)
+            td_abs_values.append(abs(td_error_float))
 
             for sample in group:
                 agent_idx = int(sample.agent_idx)
@@ -463,7 +568,7 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                     output_values=False,
                 )
 
-                policy_advantage = sample.normalized_advantage.to(
+                policy_advantage = policy_advantage_tensor.to(
                     agent_device, dtype=logprob.dtype
                 )
                 old_logprob = sample.old_logprob.to(agent_device, dtype=logprob.dtype)
@@ -496,12 +601,9 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                 unclipped_ratio_values.append(unclip_ratio_float)
                 advantage_values.append(adv_float)
 
-                sample_target = sample.metadata.get("value_target")
-                sample_target_float = (
-                    float(sample_target.view(-1)[0].float().cpu().item())
-                    if sample_target is not None
-                    else None
-                )
+                sample.advantage = td_error.detach().cpu()
+                sample.normalized_advantage = policy_advantage.detach().cpu()
+                sample.metadata["value_target"] = value_target.detach().cpu()
                 self._write_detail(
                     {
                         "event": "maac_update_sample",
@@ -518,11 +620,14 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                             sample.old_value.view(-1)[0].float().cpu().item()
                         ),
                         "value_pred_current": current_value,
-                        "value_target": sample_target_float,
-                        "td_error_current": (
+                        "value_target": target_value,
+                        "td_error_current": td_error_float,
+                        "next_value_current": (
                             None
-                            if sample_target_float is None
-                            else sample_target_float - current_value
+                            if next_value is None
+                            else float(
+                                next_value.detach().view(-1)[0].float().cpu().item()
+                            )
                         ),
                         "old_logprob": float(
                             sample.old_logprob.view(-1)[0].float().cpu().item()
@@ -539,6 +644,13 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                     }
                 )
 
+        value_loss = torch.stack(critic_losses).mean()
+        if not torch.isfinite(value_loss):
+            raise FloatingPointError("Non-finite value loss detected.")
+        self.critic_optimizer.zero_grad(set_to_none=True)
+        (float(self.args.value_loss_coef) * value_loss).backward()
+        self.critic_optimizer.step()
+
         actor_loss_values: List[float] = []
         for agent_idx, actor_losses in sorted(actor_losses_by_agent.items()):
             if not actor_losses:
@@ -547,17 +659,10 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
             if not torch.isfinite(actor_loss):
                 raise FloatingPointError("Non-finite actor loss detected.")
             optimizer = self.agent_optimizers[agent_idx]
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             actor_loss.backward()
             optimizer.step()
             actor_loss_values.append(float(actor_loss.detach().cpu().item()))
-
-        value_loss = torch.stack(critic_losses).mean()
-        if not torch.isfinite(value_loss):
-            raise FloatingPointError("Non-finite value loss detected.")
-        self.critic_optimizer.zero_grad()
-        (float(self.args.value_loss_coef) * value_loss).backward()
-        self.critic_optimizer.step()
 
         def _mean(vals: List[float]) -> float:
             return float(sum(vals) / len(vals)) if vals else 0.0
@@ -577,7 +682,9 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                 "importance_ratio_unclipped_mean": _mean(unclipped_ratio_values),
                 "advantage_mean": _mean(advantage_values),
                 "advantage_std": _std(advantage_values),
+                "td_error_mean": _mean(td_values),
                 "td_error_abs_mean": _mean(td_abs_values),
+                "value_target_mean": _mean(target_values),
                 "value_pred_current_mean": _mean(current_value_values),
                 "value_target_current_batch_mean": _mean(target_values),
             }
