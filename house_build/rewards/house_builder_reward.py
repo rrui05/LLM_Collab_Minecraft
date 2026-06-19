@@ -288,6 +288,7 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
         num_generations = max((len(completions) for completions in agent_completions), default=1)
         num_generations = max(1, int(num_generations))
         rewards: List[float] = []
+        detail_records: List[Dict[str, Any]] = []
 
         for generation_idx in range(num_generations):
             accepted_by_agent: List[List[str]] = []
@@ -369,27 +370,27 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
                 scalar_metrics,
                 turn_idx=turn_idx,
             )
-            _write_reward_detail(
-                {
-                    "event": "house_build_reward",
-                    "task_id": task.task_id,
-                    "turn_idx": turn_idx,
-                    "generation_idx": generation_idx,
-                    "reward_mode": reward_mode,
-                    "reward_raw": reward,
-                    "build_reward_raw": build_reward,
-                    "spider_penalty": spider_penalty,
-                    "spider_total_dmg": spider_dmg_for_penalty,
-                    "player_hp": player_hp_for_penalty,
-                    "metrics": dict(metrics),
-                    "scalar_metrics": scalar_metrics,
-                    "accepted_commands_by_agent": accepted_by_agent,
-                    "rejected_commands_by_agent": rejected_by_agent,
-                    "extracted_lines_by_agent": extracted_lines_by_agent,
-                    "raw_outputs_by_agent": raw_outputs if log_raw_completions else None,
-                    "world_scan_blocks": blocks,
-                }
-            )
+            detail_record = {
+                "event": "house_build_reward",
+                "task_id": task.task_id,
+                "turn_idx": turn_idx,
+                "generation_idx": generation_idx,
+                "reward_mode": reward_mode,
+                "reward_raw": reward,
+                "build_reward_raw": build_reward,
+                "spider_penalty": spider_penalty,
+                "spider_total_dmg": spider_dmg_for_penalty,
+                "player_hp": player_hp_for_penalty,
+                "metrics": dict(metrics),
+                "scalar_metrics": scalar_metrics,
+                "accepted_commands_by_agent": accepted_by_agent,
+                "rejected_commands_by_agent": rejected_by_agent,
+                "extracted_lines_by_agent": extracted_lines_by_agent,
+                "raw_outputs_by_agent": raw_outputs if log_raw_completions else None,
+                "world_scan_blocks": blocks,
+            }
+            detail_records.append(detail_record)
+            _write_reward_detail(detail_record)
 
             if debug_enabled:
                 _maybe_debug_print(
@@ -400,6 +401,7 @@ def get_reward_function(*, cfg: Dict[str, Any], num_agents: int) -> Callable[...
                     turn_idx=turn_idx,
                     raw_outputs=raw_outputs,
                 )
+        setattr(reward_fn, "last_details", detail_records)
         return rewards
 
     return reward_fn

@@ -597,7 +597,10 @@ def main() -> int:
                 batch_item["_house_build_turn"] = prompt_item["_house_build_turn"]
         else:
             batch_item = prompt_item
-        return reward_base(*agent_completions, batch_items=[batch_item])
+        rewards = reward_base(*agent_completions, batch_items=[batch_item])
+        if hasattr(reward_base, "last_details"):
+            setattr(reward_func, "last_details", getattr(reward_base, "last_details"))
+        return rewards
 
     reward_processor = None
     rp_cfg = cfg.get("reward_processor") or {}

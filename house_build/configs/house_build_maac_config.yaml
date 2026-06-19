@@ -65,6 +65,10 @@ output:
   verbose: false
   save_final_model: false
   save_path: output_maac_house_build
+  save_best_model: false
+  best_model_path: null
+  best_metric: eval/turn_4/iou_mean
+  best_metric_mode: max
   log_detailed_metrics: true
   log_raw_completions: true
 

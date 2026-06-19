@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -46,6 +47,8 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
         super().__init__(*args, **kwargs)
         self.joint_rollout_buffer: List[List[RolloutSample]] = []
         self._detail_log_path = self._resolve_detail_log_path()
+        self._best_model_config = self._resolve_best_model_config()
+        self._best_metric_value: Optional[float] = None
 
     def _resolve_detail_log_path(self) -> Optional[str]:
         if not bool(getattr(self.args, "detailed_logging", True)):
@@ -70,6 +73,199 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
             )
         )
         return os.path.join(str(output_dir), filename)
+
+    def _output_config(self) -> Dict[str, Any]:
+        if isinstance(getattr(self, "wandb_config", None), dict):
+            sections = self.wandb_config.get("config_sections") or {}
+            if isinstance(sections, dict):
+                output = sections.get("output") or {}
+                if isinstance(output, dict):
+                    return output
+        return {}
+
+    @staticmethod
+    def _as_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in ("true", "1", "yes", "y", "t"):
+                return True
+            if s in ("false", "0", "no", "n", "f", "none", "null", ""):
+                return False
+        return bool(value)
+
+    def _resolve_best_model_config(self) -> Dict[str, Any]:
+        output = self._output_config()
+        enabled = self._as_bool(output.get("save_best_model"), False)
+        metric_name = str(output.get("best_metric") or "").strip()
+        metric_mode = str(output.get("best_metric_mode") or "max").strip().lower()
+        if metric_mode not in {"max", "min"}:
+            metric_mode = "max"
+
+        path_cfg = output.get("best_model_path")
+        if path_cfg:
+            best_model_path = str(path_cfg)
+        else:
+            save_path = output.get("save_path")
+            if save_path:
+                best_model_path = os.path.join(os.path.dirname(str(save_path)), "best_model")
+            else:
+                base_dir = output.get("base_dir") or os.getcwd()
+                best_model_path = os.path.join(str(base_dir), "best_model")
+
+        return {
+            "enabled": enabled,
+            "path": os.path.abspath(best_model_path),
+            "metric": metric_name,
+            "mode": metric_mode,
+        }
+
+    def _select_best_metric(self, metrics: Dict[str, float]) -> Tuple[Optional[str], Optional[float]]:
+        if not metrics:
+            return None, None
+
+        metric_name = str(self._best_model_config.get("metric") or "").strip()
+        if metric_name and metric_name in metrics:
+            return metric_name, float(metrics[metric_name])
+
+        suffix = "/iou_mean"
+        if metric_name and "/" in metric_name:
+            suffix = "/" + metric_name.rsplit("/", 1)[-1]
+        candidates = [
+            (key, value)
+            for key, value in metrics.items()
+            if key.startswith("eval/turn_") and key.endswith(suffix)
+        ]
+        if metric_name and not candidates:
+            return None, None
+        if not candidates:
+            candidates = [
+                (key, value)
+                for key, value in metrics.items()
+                if key.startswith("eval/") and key.endswith("/reward_mean")
+            ]
+        if not candidates:
+            numeric = [(key, value) for key, value in metrics.items()]
+            candidates = numeric[:1]
+        if not candidates:
+            return None, None
+
+        def _turn_index(item: Tuple[str, float]) -> int:
+            match = re.search(r"eval/turn_(\d+)/", item[0])
+            return int(match.group(1)) if match else -1
+
+        key, value = max(candidates, key=_turn_index)
+        return key, float(value)
+
+    def _metric_improved(self, value: float) -> bool:
+        if self._best_metric_value is None:
+            return True
+        mode = str(self._best_model_config.get("mode") or "max")
+        if mode == "min":
+            return value < self._best_metric_value
+        return value > self._best_metric_value
+
+    def _maybe_save_best_model(self, eval_metrics: Dict[str, float]) -> None:
+        if not self._as_bool(self._best_model_config.get("enabled"), False):
+            return
+        dist_env = getattr(self, "dist_env", None)
+        if not bool(getattr(dist_env, "is_main", True)):
+            return
+
+        metric_name, metric_value = self._select_best_metric(eval_metrics)
+        if metric_name is None or metric_value is None:
+            expected = str(self._best_model_config.get("metric") or "eval/turn_*/iou_mean")
+            self._write_detail(
+                {
+                    "event": "best_model_metric_missing",
+                    "expected_metric": expected,
+                    "available_metrics": sorted(eval_metrics.keys()),
+                }
+            )
+            if getattr(self, "verbose", True):
+                print(
+                    f"Best model not saved: metric {expected!r} not found in eval metrics.",
+                    flush=True,
+                )
+            return
+        if not self._metric_improved(metric_value):
+            return
+
+        self._best_metric_value = float(metric_value)
+        output_dir = str(self._best_model_config["path"])
+        self.save_model(output_dir)
+        metadata = {
+            "event": "best_model_saved",
+            "time": time.time(),
+            "env_step": int(getattr(self, "env_step", 0)),
+            "metric_name": metric_name,
+            "metric_value": float(metric_value),
+            "metric_mode": str(self._best_model_config.get("mode") or "max"),
+            "metrics": eval_metrics,
+            "config_sections": (
+                self.wandb_config.get("config_sections")
+                if isinstance(getattr(self, "wandb_config", None), dict)
+                else None
+            ),
+        }
+        try:
+            with open(os.path.join(output_dir, "best_model_info.json"), "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            pass
+        self._write_detail(metadata)
+        print(
+            f"Best model saved to: {output_dir} "
+            f"({metric_name}={float(metric_value):.6f}, step={int(getattr(self, 'env_step', 0))})",
+            flush=True,
+        )
+
+    def evaluate(self) -> Dict[str, float]:
+        metrics = super().evaluate()
+        self._maybe_save_best_model(metrics)
+        return metrics
+
+    def _summarize_rollout_metrics(self, rollouts: List[RolloutSample]) -> Dict[str, float]:
+        metrics = super()._summarize_rollout_metrics(rollouts)
+        scalar_keys = [
+            "iou",
+            "coverage_rate",
+            "redundancy_rate",
+            "score_match",
+            "exact_non_air_rate",
+            "covered_blocks",
+            "extra_blocks",
+            "expected_non_air",
+            "observed_non_air",
+            "build_reward_raw",
+            "spider_penalty",
+            "reward_raw",
+            "level_1",
+            "level_2",
+            "level_total",
+        ]
+        by_key: Dict[str, List[float]] = {key: [] for key in scalar_keys}
+        for sample in rollouts:
+            metadata = getattr(sample, "metadata", {}) or {}
+            reward_metrics = metadata.get("reward_metrics") or {}
+            if not isinstance(reward_metrics, dict):
+                reward_metrics = {}
+            for key in scalar_keys:
+                value = reward_metrics.get(key, metadata.get(key))
+                if value is None:
+                    continue
+                try:
+                    value_f = float(value)
+                except Exception:
+                    continue
+                by_key[key].append(value_f)
+        for key, values in by_key.items():
+            if values:
+                metrics[f"{key}_mean"] = float(sum(values) / len(values))
+        return metrics
 
     def _write_detail(self, payload: Dict[str, Any]) -> None:
         if not self._detail_log_path:
@@ -294,6 +490,17 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                     batch_items=[batch_item],
                     signature=self._reward_signature,
                 )
+                reward_details_raw = getattr(self.reward_func, "last_details", None)
+                reward_detail: Dict[str, Any] = {}
+                if isinstance(reward_details_raw, list) and reward_details_raw:
+                    maybe_detail = reward_details_raw[0]
+                    if isinstance(maybe_detail, dict):
+                        reward_detail = maybe_detail
+                elif isinstance(reward_details_raw, dict):
+                    reward_detail = reward_details_raw
+                reward_metrics = reward_detail.get("scalar_metrics") or {}
+                if not isinstance(reward_metrics, dict):
+                    reward_metrics = {}
                 rewards = normalize_reward_lengths(
                     [float(self.reward_processor(r)) for r in rewards],
                     num_agents=self.args.num_agents,
@@ -355,6 +562,8 @@ class PaperAlignedMAACTrainer(BaseMAACTrainer):
                             "trajectory_idx": gen_idx,
                             "adv_target": reward_cpu,
                             "value_target": reward_cpu,
+                            "reward_metrics": dict(reward_metrics),
+                            "reward_detail": reward_detail,
                         },
                     )
                     all_rollouts.append(sample)
